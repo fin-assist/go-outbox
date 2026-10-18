@@ -1,0 +1,53 @@
+# A tag vX.Y.Z on main publishes a release (docs/releasing.md). The owner pushes the tag after
+# the release PR is merged; this workflow checks it and creates the GitHub release with the
+# notes of its CHANGELOG.md section. Services get the version through Renovate.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # the GitHub release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: The tag is a release of this module
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "$TAG is not vX.Y.Z"
+            exit 1
+          fi
+          major=${BASH_REMATCH[1]}
+          module=$(sed -n 's/^module //p' go.mod)
+          # From v2 on the module path ends in /vN (Go modules); v0 and v1 have no suffix.
+          if [ "$major" -ge 2 ] && [[ "$module" != */v"$major" ]]; then
+            echo "$TAG needs the module path to end in /v$major, go.mod has $module"
+            exit 1
+          fi
+          if [ "$major" -lt 2 ] && [[ "$module" =~ /v[0-9]+$ ]]; then
+            echo "$TAG is v$major, but go.mod has the major suffix in $module"
+            exit 1
+          fi
+          git fetch -q origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "$TAG does not point to a commit on main"
+            exit 1
+          fi
+          if [ "$(python3 scripts/changelog.py latest)" != "$TAG" ]; then
+            echo "The newest section of CHANGELOG.md is not $TAG: merge the release PR first"
+            exit 1
+          fi
+          python3 scripts/changelog.py notes "$TAG" > notes.md
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md
