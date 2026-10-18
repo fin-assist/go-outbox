@@ -1,0 +1,111 @@
+# golangci-lint v2 (version pinned in .github/workflows/ci.yml).
+version: "2"
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose
+    - depguard
+    - errorlint
+    - forbidigo
+    - gosec
+    - misspell
+    - nilerr
+    - noctx
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
+  settings:
+    forbidigo:
+      analyze-types: true
+      forbid:
+        # Errors that reach the client are built only by the finerr constructors
+        # (grpc-api.md 5.2): a hand-made status can carry a misspelled reason or miss a
+        # required metadata key, and bank-bff turns it into 500. A bare internal code is
+        # built in one function of the library with a nolint and its reason.
+        - pattern: ^status\.(Error|Errorf|New|Newf|FromProto)$
+          pkg: ^google\.golang\.org/grpc/status$
+          msg: build client-facing errors with finerr (grpc-api.md 5.2)
+        - pattern: ^errdetails\.ErrorInfo$
+          pkg: ^google\.golang\.org/genproto/googleapis/rpc/errdetails$
+          msg: ErrorInfo is built only by finerr (grpc-api.md 5.2)
+        - pattern: ^grpc\.Errorf$
+          msg: build errors with finerr (grpc-api.md 5.2)
+        # A library never reaches for process-wide state: the service passes the logger, the
+        # metrics registry and the settings in (AGENTS.md, «Writing code»).
+        - pattern: ^slog\.(Default|SetDefault|Debug|Info|Warn|Error|Log)(Context|Attrs)?$
+          pkg: ^log/slog$
+          msg: take a *slog.Logger from the service
+        - pattern: ^log\.(Print|Fatal|Panic)(f|ln)?$
+          pkg: ^log$
+          msg: take a *slog.Logger from the service
+        - pattern: ^(prometheus\.(MustRegister|Register)|promauto\.New.*)$
+          msg: register metrics on the prometheus.Registerer the service passes in
+        - pattern: ^os\.(Getenv|LookupEnv|Environ)$
+          pkg: ^os$
+          msg: a library takes its settings from the service, not from the environment
+    depguard:
+      # No frameworks, ORMs, DI containers; the standard library first (AGENTS.md, «Principles»).
+      rules:
+        main:
+          deny:
+            - pkg: github.com/gin-gonic/gin
+              desc: no web frameworks, use net/http
+            - pkg: github.com/labstack/echo
+              desc: no web frameworks, use net/http
+            - pkg: github.com/gofiber/fiber
+              desc: no web frameworks, use net/http
+            - pkg: github.com/go-chi/chi
+              desc: net/http ServeMux has method and path patterns
+            - pkg: github.com/gorilla/mux
+              desc: net/http ServeMux has method and path patterns
+            - pkg: github.com/go-kit/kit
+              desc: no frameworks
+            - pkg: gorm.io
+              desc: no ORM, SQL on pgx
+            - pkg: entgo.io
+              desc: no ORM, SQL on pgx
+            - pkg: github.com/jmoiron/sqlx
+              desc: SQL on pgx
+            - pkg: go.uber.org/fx
+              desc: no DI containers, explicit wiring in internal/app
+            - pkg: go.uber.org/dig
+              desc: no DI containers, explicit wiring in internal/app
+            - pkg: github.com/google/wire
+              desc: no DI generators, explicit wiring in internal/app
+            - pkg: github.com/spf13/viper
+              desc: configuration is internal/config
+            - pkg: github.com/sirupsen/logrus
+              desc: use log/slog
+            - pkg: go.uber.org/zap
+              desc: use log/slog
+            - pkg: github.com/rs/zerolog
+              desc: use log/slog
+            - pkg: github.com/pkg/errors
+              desc: use errors and fmt.Errorf with %w
+            - pkg: github.com/stretchr/testify
+              desc: use testing
+            - pkg: github.com/golang/mock
+              desc: write fakes of the consumer-side interfaces
+            - pkg: go.uber.org/mock
+              desc: write fakes of the consumer-side interfaces
+    gosec:
+      excludes:
+        - G115 # integer conversions of config values are bounds-checked in config
+  exclusions:
+    rules:
+      # Tests build statuses to play a failing peer.
+      - path: _test\.go
+        linters: [forbidigo, gosec, noctx]
+      # The test PostgreSQL is chosen by TEST_DATABASE_URL / TEST_POSTGRES_IMAGE / CI.
+      - path: internal/pgtest/
+        linters: [forbidigo]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/fin-assist/go-outbox

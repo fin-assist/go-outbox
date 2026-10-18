@@ -1,0 +1,195 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# fin-assist modules are fetched from git, not the public proxy. A private one needs the
+# secret GO_MODULES_TOKEN (read access to fin-assist repositories); public ones work without it.
+env:
+  GOPRIVATE: github.com/fin-assist/*
+  GOLANGCI_LINT_VERSION: v2.15.0 # same as Makefile
+  GORELEASE: golang.org/x/exp/cmd/gorelease@v0.0.0-20261014143641-f0251eb4aa3e # same as Makefile
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # the coverage comment
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: coverage of changed lines diffs the PR against its base branch.
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Access to private modules
+        env:
+          TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            git config --global url."https://x-access-token:${TOKEN}@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"
+          fi
+      - name: go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum || { echo "Run go mod tidy and commit the result."; exit 1; }
+      - name: Vet
+        run: go vet ./...
+      # Integration tests start PostgreSQL in Docker (testcontainers); with CI set they fail
+      # instead of skipping when no database is available. They include the up -> down -> up
+      # check of the library's migrations (migrations_test.go).
+      - name: Test
+        run: go test -race -count=1 -coverpkg=./... -coverprofile=cover.out ./...
+      - name: Test the scripts
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: CHANGELOG.md format
+        run: python3 scripts/changelog.py check
+
+      # Informational: the 80 % target for changed lines is checked in review (AGENTS.md, Tests);
+      # nothing fails on a low value or a failed script. The branch name goes through env.
+      - name: Coverage of changed lines
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          rm -f coverage.md
+          python3 scripts/coverage-diff.py --base "origin/$BASE_REF" --summary "$GITHUB_STEP_SUMMARY" > coverage.md
+      - name: Coverage of the project
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        run: python3 scripts/coverage-diff.py --summary "$GITHUB_STEP_SUMMARY"
+
+      # One comment per PR, found by its marker and edited on every push. PRs from forks get a
+      # read-only token, so they are skipped; a failed post never fails the build.
+      - name: Coverage comment on the PR
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && hashFiles('coverage.md') != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          marker='<!-- coverage-report (ci.yml) -->'
+          {
+            echo "$marker"
+            cat coverage.md
+            echo
+            echo "<sub>Commit ${HEAD_SHA::7} · [CI run]($RUN_URL) · цель 80 % изменённых строк, AGENTS.md (Tests)</sub>"
+          } > comment.md
+          id=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate \
+            | jq -rs --arg m "$marker" \
+              '[.[][] | select(.user.login == "github-actions[bot]" and (.body | startswith($m)))][0].id // empty')
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$id" -F body=@comment.md > /dev/null
+          else
+            gh api "repos/${{ github.repository }}/issues/$PR/comments" -F body=@comment.md > /dev/null
+          fi
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Access to private modules
+        env:
+          TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            git config --global url."https://x-access-token:${TOKEN}@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"
+          fi
+      # forbidigo: errors only through finerr, no process-wide logger, metrics registry or
+      # environment; depguard: no frameworks (.golangci.yml).
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+
+  # The exported API against the latest release (docs/releasing.md). gorelease lists
+  # incompatible and compatible changes and suggests the next version. On a release PR (the
+  # newest section of CHANGELOG.md names a version that has no tag yet) the version must be
+  # one gorelease accepts: an incompatible change needs a new minor in v0, a new major path
+  # from v1 on. Otherwise the report is informational.
+  api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Access to private modules
+        env:
+          TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            git config --global url."https://x-access-token:${TOKEN}@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"
+          fi
+      - name: API changes
+        run: |
+          base=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+          next=$(python3 scripts/changelog.py latest)
+          args=(-base="${base:-none}")
+          if [ -n "$next" ] && ! git rev-parse -q --verify "refs/tags/$next" > /dev/null; then
+            args+=(-version="$next")
+          fi
+          set +e
+          go run "$GORELEASE" "${args[@]}" > gorelease.txt 2>&1
+          set -e
+          {
+            echo "### API против ${base:-первой версии}"
+            echo
+            echo '```'
+            cat gorelease.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat gorelease.txt
+          # gorelease also exits 1 on diagnostics of dependencies (a retracted indirect
+          # module), so the verdict is read from its summary, not from the exit code.
+          if [ -n "$next" ] && ! git rev-parse -q --verify "refs/tags/$next" > /dev/null; then
+            if ! grep -q "^$next is a valid semantic version for this release" gorelease.txt; then
+              echo "CHANGELOG.md names $next, which gorelease does not accept (docs/releasing.md)."
+              exit 1
+            fi
+          fi
+
+  migrations:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # A released migration runs in every service that updated the library: it is never
+      # edited; a change goes into a new file.
+      - name: Existing migrations are unchanged
+        run: |
+          changed=$(git diff --name-only --diff-filter=MDR "origin/${{ github.base_ref }}...HEAD" -- 'migrations/*.sql')
+          if [ -n "$changed" ]; then
+            echo "Existing migrations were modified, renamed or deleted:"
+            echo "$changed"
+            echo "Add a new migration instead (docs/releasing.md, «Миграции»)."
+            exit 1
+          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Squawk lints the new up files; down files are checked by the up -> down -> up test.
+      - name: Squawk
+        run: |
+          files=$(git diff --name-only --diff-filter=A "origin/${{ github.base_ref }}...HEAD" -- 'migrations/*.up.sql')
+          if [ -z "$files" ]; then
+            echo "No new migrations."
+            exit 0
+          fi
+          npx --yes squawk-cli@2.70.0 --config .squawk.toml $files
