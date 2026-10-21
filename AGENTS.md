@@ -171,8 +171,8 @@ on PRs the migration checks (existing files unchanged, squawk on new ones). Run 
   комментариев: замечание по тексту только если он искажает поведение кода. Особое внимание: <что именно и почему>.
   ```
 
-  - `@claude` — `.github/workflows/claude.yml` (runs from the default branch), Claude Fable 5.1
-    (`claude-fable-5-1`). Needs the Claude GitHub App and the `CLAUDE_CODE_OAUTH_TOKEN` secret.
+  - `@claude` — `.github/workflows/claude.yml` (runs from the default branch), Claude Opus 5.5
+    (`claude-opus-5-5`, `--effort high`; FIN-204). Needs the Claude GitHub App and the `CLAUDE_CODE_OAUTH_TOKEN` secret.
   - `@codex` — the Codex GitHub integration under the owner's ChatGPT subscription. Its model is chosen by OpenAI
     and cannot be pinned from here; a pinned model would need the OpenAI API with per-token billing, which was
     declined (FIN-103).
