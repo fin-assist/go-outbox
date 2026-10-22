@@ -675,7 +675,7 @@ class LateQuarantineGenerationTests(unittest.TestCase):
 
 class QueuedRetryEvidenceTests(unittest.TestCase):
     def test_acknowledged_retry_queue_and_running_snapshots_wait_without_alarm(self):
-        for final in ('success','failure'):
+        for final in ('success','failure','cancelled','timed_out'):
             api=Fake();api.run['conclusion']='failure';api.jobs[0]['conclusion']='failure'
             request=api.request
             def queued(method,path,data=None):
@@ -692,7 +692,12 @@ class QueuedRetryEvidenceTests(unittest.TestCase):
             reconcile(api,api.config)
             self.assertEqual(sum(path.endswith('rerun-failed-jobs') for path,_ in api.actions),1)
             if final=='success':self.assertTrue(any(path=='pulls/1/merge' for path,_ in api.actions))
-            else:self.assertEqual(api.pr['state'],'closed')
+            elif final=='failure':self.assertEqual(api.pr['state'],'closed')
+            else:
+                self.assertEqual(api.pr['state'],'open');self.assertEqual(api.actions,before)
+                api.run.update(run_attempt=3,conclusion='failure');api.jobs[0]['conclusion']='failure'
+                reconcile(api,api.config)
+                self.assertEqual(api.pr['state'],'open');self.assertEqual(api.actions,before)
 
 
 class NormalAndDigestPolicyTests(unittest.TestCase):
