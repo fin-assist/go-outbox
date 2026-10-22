@@ -367,11 +367,48 @@ class SignedCommitsAdapterTests(unittest.TestCase):
                     payload={'data':{'repository':{'object':{'signature':signature}}}}
                     if valid=='errors':payload={'data':None,'errors':[{'message':'fixture refusal'}]}
                     if valid=='null_object':payload={'data':{'repository':{'object':None}}}
-                    with patch('urllib.request.urlopen',lambda *args,**kwargs:Response(payload)):
-                        self.assertEqual(api.signed_commits(1)[0]['_trusted_signer'],allowed)
-                        reconcile(api,api.config)
+                    def respond(req, **kwargs):
+                        query=json.loads(req.data)
+                        self.assertIn('$sha:GitObjectID!',query['query'])
+                        self.assertEqual(query['variables']['sha'],'abc')
+                        return Response(payload)
+                    with patch('urllib.request.urlopen',respond):
+                        if valid in ('errors','null_object'):
+                            with self.assertRaisesRegex(ValueError,'signature query'):
+                                api.signed_commits(1)
+                            with self.assertRaises(ValueError):reconcile(api,api.config)
+                        else:
+                            self.assertEqual(api.signed_commits(1)[0]['_trusted_signer'],allowed)
+                            reconcile(api,api.config)
                     self.assertEqual(bool(api.actions),allowed)
                     if not allowed:self.assertEqual(api.pr['state'],'open')
+
+
+    def test_graphql_error_and_malformed_data_are_visible_and_never_leak_payload(self):
+        import io
+        from unittest.mock import patch
+        api=GitHub('credential-not-for-output','owner/repo')
+        api.pages=lambda *args:[{'sha':'abc','committer':{'login':'web-flow'}}]
+        good={'isValid':True,'signer':{'login':'web-flow'}}
+        malformed=[[],None,{}, {'data':None}, {'data':[]}, {'data':{'repository':None}},
+                   {'data':{'repository':{'object':None}}}, {'data':{'repository':{'object':{}}}},
+                   {'data':{'repository':{'object':{'signature':[]}}}}]
+        for signature in ({}, {'isValid':'true','signer':None}, {'isValid':True},
+                          {'isValid':True,'signer':[]}, {'isValid':True,'signer':{}},
+                          {'isValid':True,'signer':{'login':17}}):
+            malformed.append({'data':{'repository':{'object':{'signature':signature}}}})
+        malformed.append({'data':{'repository':{'object':{'signature':good}}},
+                          'errors':[{'message':'credential-not-for-output sensitive-payload'}]})
+        for payload in malformed:
+            with self.subTest(payload=payload),patch('urllib.request.urlopen',lambda *a,**k:io.BytesIO(json.dumps(payload).encode())):
+                with self.assertRaisesRegex(ValueError,'signature query') as error:api.signed_commits(1)
+                self.assertNotIn('credential-not-for-output',str(error.exception))
+                self.assertNotIn('sensitive-payload',str(error.exception))
+        # A well-formed unsigned response remains an untrusted commit, not an API error.
+        payload={'data':{'repository':{'object':{'signature':None}}}}
+        with patch('urllib.request.urlopen',lambda *a,**k:io.BytesIO(json.dumps(payload).encode())):
+            self.assertFalse(api.signed_commits(1)[0]['_trusted_signer'])
+
 
 
 class AndroidCatalogAdapterTests(unittest.TestCase):
