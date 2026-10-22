@@ -376,13 +376,105 @@ class SignedCommitsAdapterTests(unittest.TestCase):
                         if valid in ('errors','null_object'):
                             with self.assertRaisesRegex(ValueError,'signature query'):
                                 api.signed_commits(1)
-                            with self.assertRaises(ValueError):reconcile(api,api.config)
+                            with self.assertRaisesRegex(ValueError,'failed for PRs: 1'):reconcile(api,api.config)
                         else:
                             self.assertEqual(api.signed_commits(1)[0]['_trusted_signer'],allowed)
                             reconcile(api,api.config)
                     self.assertEqual(bool(api.actions),allowed)
                     if not allowed:self.assertEqual(api.pr['state'],'open')
 
+
+    def test_late_signature_failure_at_each_fresh_boundary_preserves_safe_partial_state(self):
+        import io
+        from unittest.mock import patch
+        class RealSignerFake(Fake):
+            signed_commits=GitHub.signed_commits
+            def pages(self,path,key=None):
+                if path=='pulls/1/commits':
+                    return [{'sha':'abc','author':{'id':29139614},'committer':{'login':'web-flow'},
+                             'commit':{'message':self.message,'verification':{'verified':True}}}]
+                return super().pages(path,key)
+        valid={'data':{'repository':{'object':{'signature':{'isValid':True,'signer':{'login':'web-flow'}}}}}}
+        failures=[{'errors':[{'message':'fixture failure'}],'data':None},
+                  {'data':{'repository':{'object':None}}}]
+        # Calls: initial signature, phase-entry fresh, post-claim/policy fresh,
+        # then close's final fresh immediately before PATCH state=closed.
+        for phase,failure_call in [('merge',2),('retry',2),('retry',3),('close',2),('close',3),('close',4)]:
+            for failure in failures:
+                with self.subTest(phase=phase,failure_call=failure_call,failure=failure):
+                    api=RealSignerFake();calls=[]
+                    if phase!='merge':
+                        api.run['conclusion']='failure';api.jobs[0]['conclusion']='failure'
+                    if phase=='close':
+                        api.run['run_attempt']=2
+                        state={'sha':'abc','runs':{'ci.yml':{'run_id':1,'attempt':1,'retried':True}}}
+                        api.receipts={'1:abc':{'state':state,'comment_id':10}}
+                        api.comments=[{'id':10,'user':{'login':'controller'},'body':MARKER+json.dumps(state)+' -->'}]
+                    original_receipts=copy.deepcopy(api.receipts)
+                    def respond(req,**kwargs):
+                        calls.append(json.loads(req.data))
+                        return io.BytesIO(json.dumps(failure if len(calls)==failure_call else valid).encode())
+                    with patch('urllib.request.urlopen',respond):
+                        with self.assertRaisesRegex(ValueError,'failed for PRs: 1'):
+                            reconcile(api,api.config)
+                        self.assertEqual(len(calls),failure_call)
+                        self.assertEqual(api.pr['state'],'open')
+                        self.assertFalse(any(path=='pulls/1/merge' or path=='pulls/1'
+                                             or path.endswith('rerun-failed-jobs') for path,_ in api.actions))
+                        if phase=='retry' and failure_call==3:
+                            expected={'sha':'abc','runs':{'ci.yml':{'run_id':1,'attempt':1,'retried':True}}}
+                            self.assertEqual(api.receipts['1:abc']['state'],expected)
+                            self.assertEqual(len(api.comments),1)
+                            # Next delivery repairs UX but cannot reset/spend the claim again.
+                            with self.assertRaisesRegex(ValueError,'failed for PRs: 1'):
+                                reconcile(api,api.config)
+                            self.assertEqual(api.receipts['1:abc']['state'],expected)
+                            self.assertIn('dispatch неизвестен',api.comments[0]['body'])
+                            self.assertEqual(len(api.comments),1)
+                            self.assertFalse(any(path.endswith('rerun-failed-jobs') for path,_ in api.actions))
+                        else:
+                            self.assertEqual(api.receipts,original_receipts)
+                        if phase=='close' and failure_call>=3:
+                            self.assertTrue(any(rule.get('dependencyDashboardApproval') for rule in api.policy['packageRules']))
+                            self.assertTrue(any(path=='policy' for path,_ in api.actions))
+                        else:
+                            self.assertEqual(api.policy,{'baseBranchPatterns':['main']})
+
+    def test_partial_retry_dispatch_signature_failure_keeps_both_claims_without_second_dispatch(self):
+        import io
+        from unittest.mock import patch
+        class RealSignerMulti(MultiWorkflowFake):
+            signed_commits=GitHub.signed_commits
+            def pages(self,path,key=None):
+                if path=='pulls/1/commits':
+                    return [{'sha':'abc','author':{'id':29139614},'committer':{'login':'web-flow'},
+                             'commit':{'message':self.message,'verification':{'verified':True}}}]
+                return super().pages(path,key)
+        valid={'data':{'repository':{'object':{'signature':{'isValid':True,'signer':{'login':'web-flow'}}}}}}
+        for failure in [{'errors':[{'message':'fixture failure'}],'data':None},
+                        {'data':{'repository':{'object':None}}}]:
+            api=RealSignerMulti();api.start_reruns=True;calls=[]
+            for name in api.runs:api.outcome(name,'failure')
+            def respond(req,**kwargs):
+                calls.append(json.loads(req.data))
+                # Initial, pre-claim, first dispatch are valid; second dispatch fails.
+                return io.BytesIO(json.dumps(failure if len(calls)==4 else valid).encode())
+            with self.subTest(failure=failure),patch('urllib.request.urlopen',respond):
+                with self.assertRaisesRegex(ValueError,'failed for PRs: 1'):reconcile(api,api.config)
+                self.assertEqual(len(calls),4)
+                self.assertEqual(api.reruns(),['actions/runs/1/rerun-failed-jobs'])
+                state=copy.deepcopy(api.receipts['1:abc']['state'])
+                self.assertTrue(all(run['retried'] for run in state['runs'].values()))
+                self.assertEqual(api.runs['ci.yml']['status'],'queued')
+                self.assertEqual(api.runs['renovate-policy-tests.yml']['run_attempt'],1)
+                # Once the dispatched run finishes, owner notice repairs the partial dispatch.
+                api.outcome('ci.yml','success',attempt=2)
+                with self.assertRaisesRegex(ValueError,'failed for PRs: 1'):reconcile(api,api.config)
+                self.assertEqual(api.receipts['1:abc']['state'],state)
+                self.assertEqual(api.reruns(),['actions/runs/1/rerun-failed-jobs'])
+                self.assertIn('dispatch неизвестен',api.comments[0]['body'])
+                self.assertEqual(api.pr['state'],'open')
+                self.assertFalse(any(path in ('pulls/1/merge','pulls/1','policy') for path,_ in api.actions))
 
     def test_graphql_error_and_malformed_data_are_visible_and_never_leak_payload(self):
         import io
