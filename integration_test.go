@@ -18,23 +18,13 @@ import (
 
 func database(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	pool, err := pgxpool.New(t.Context(), pgtest.DSN(t))
+	dsn := pgtest.DSN(t)
+	pgtest.Apply(t, dsn, MigrationsTable, Migrations)
+	pool, err := pgxpool.New(t.Context(), dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	sql, err := Migrations.Open("000001_outbox.up.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = sql.Close() }()
-	data, err := io.ReadAll(sql)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = pool.Exec(t.Context(), string(data)); err != nil {
-		t.Fatal(err)
-	}
 	return pool
 }
 func dispatcher(t *testing.T, pool *pgxpool.Pool, routes Routes, now func() time.Time) *Dispatcher {

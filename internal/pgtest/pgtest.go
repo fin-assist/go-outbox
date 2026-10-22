@@ -253,3 +253,13 @@ func open(t testing.TB, dsn, table string, fsys fs.FS) *migrate.Migrate {
 	}
 	return m
 }
+
+// Apply runs a library migration source with the same driver and isolated version table
+// as a service. Use it for usage tests instead of executing embedded SQL directly.
+func Apply(t testing.TB, dsn, table string, fsys fs.FS) {
+	t.Helper()
+	m := open(t, dsn, table, fsys)
+	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		t.Fatal(err)
+	}
+}

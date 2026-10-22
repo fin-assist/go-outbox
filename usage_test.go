@@ -100,11 +100,11 @@ func TestServiceUsage(t *testing.T) {
 			t.Fatal(e)
 		}
 		p, _ := NewPublisher(provider{tx}, time.Now)
-		payload, e := proto.Marshal(&settings.SetUserTimezoneRequest{UserId: "user-1", Timezone: "Europe/Moscow", SettingsVersion: version})
+		payload, e := proto.Marshal(&settings.SetUserTimezoneRequest{UserId: "00000000-0000-4000-8000-000000000001", Timezone: "Europe/Moscow", SettingsVersion: version})
 		if e != nil {
 			t.Fatal(e)
 		}
-		if e = p.Publish(t.Context(), "user.timezone_changed", "user-1", payload); e != nil {
+		if e = p.Publish(t.Context(), "user.timezone_changed", "00000000-0000-4000-8000-000000000001", payload); e != nil {
 			t.Fatal(e)
 		}
 		if e = tx.Commit(t.Context()); e != nil {
@@ -135,7 +135,7 @@ func TestServiceUsage(t *testing.T) {
 	// The actual generated client observes the contract's bare PERMISSION_DENIED for a foreign service.
 	client := settings.NewUserSettingsSyncServiceClient(conn)
 	ctx := metadata.NewOutgoingContext(t.Context(), metadata.Pairs("x-service-authorization", "Bearer foreign-service"))
-	_, err = client.SetUserTimezone(ctx, &settings.SetUserTimezoneRequest{UserId: "user-1", SettingsVersion: 4})
+	_, err = client.SetUserTimezone(ctx, &settings.SetUserTimezoneRequest{UserId: "00000000-0000-4000-8000-000000000001", SettingsVersion: 4})
 	if status.Code(err) != codes.PermissionDenied || len(status.Convert(err).Details()) != 0 {
 		t.Fatalf("foreign caller status %v", err)
 	}
