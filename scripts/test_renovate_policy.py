@@ -53,7 +53,8 @@ class PolicyTests(unittest.TestCase):
         self.assertTrue(trusted(pr,[commit],repo))
         for bad in ({'author':None}, {'_trusted_signer':False}, {'author':{'id':1}}, {'commit':{'verification':{'verified':False}}}):
             changed=copy.deepcopy(commit);changed.update(bad)
-            self.assertFalse(trusted(pr,[commit,changed],repo))
+            self.assertFalse(trusted(dict(pr,commits=2),[commit,changed],repo))
+            self.assertFalse(trusted(pr,[changed],repo))
         self.assertFalse(trusted(dict(pr,user={'id':1,'login':'renovate[bot]'}),[commit],repo))
         self.assertFalse(trusted(pr,[],repo))
 
@@ -141,3 +142,118 @@ class RecoveryFamilyTests(unittest.TestCase):
         self.assertEqual(rule['matchJsonata'],['newMajor = 4'])
         self.assertEqual(rule['recreateWhen'],'always')
         self.assertNotIn('additionalBranchPrefix',rule)
+
+class DigestRecoveryTests(unittest.TestCase):
+    def test_digest_without_explicit_major_uses_tag_even_when_numeric(self):
+        from renovate_policy import recovery_rules
+        rule=recovery_rules([{'depName':'postgres','datasource':'docker','newValue':'18','newDigest':'sha256:bad'}],42)[0]
+        self.assertEqual(rule['matchNewValue'],'/^18$/')
+        self.assertNotIn('matchJsonata',rule)
+        self.assertEqual(rule['recreateWhen'],'always')
+
+class CurrentRunAdapterTests(unittest.TestCase):
+    def test_real_adapter_rejects_wrong_pr_base_and_head_and_uses_latest_run(self):
+        import copy
+        pr={'number':7,'head':{'sha':'current'},'base':{'ref':'release/0.2.12'}}
+        valid={'id':10,'head_sha':'current','pull_requests':[{'number':7,'base':{'ref':'release/0.2.12'}}],'status':'completed','conclusion':'success'}
+        stale_head=dict(copy.deepcopy(valid),id=100,head_sha='old')
+        wrong_pr=dict(copy.deepcopy(valid),id=200,pull_requests=[{'number':8,'base':{'ref':'release/0.2.12'}}])
+        wrong_base=dict(copy.deepcopy(valid),id=300,pull_requests=[{'number':7,'base':{'ref':'main'}}])
+        latest=dict(copy.deepcopy(valid),id=11,status='in_progress',conclusion=None)
+        class Fake(GitHub):
+            def pages(self,path,key=None):
+                self.path=path
+                return copy.deepcopy(self.runs)
+        api=Fake('','x');api.runs=[stale_head,wrong_pr,wrong_base,valid,latest]
+        self.assertEqual(api.current_run(pr)['id'],11)
+        self.assertEqual(api.current_run(pr)['status'],'in_progress')
+        self.assertIn('event=pull_request&head_sha=current',api.path)
+        api.runs=[stale_head,wrong_pr,wrong_base]
+        self.assertIsNone(api.current_run(pr))
+
+class PresetProtectionAdapterTests(unittest.TestCase):
+    def test_only_controller_can_write_generated_presets(self):
+        import copy
+        protected={'enforce_admins':{'enabled':True},'restrictions':{'users':[{'login':'controller'}],'teams':[],'apps':[]},'allow_force_pushes':{'enabled':False},'allow_deletions':{'enabled':False}}
+        class Fake(GitHub):
+            def get(self,path):return self.rule
+        api=Fake('','x');api.rule=protected
+        self.assertTrue(api.policy_protected('controller'))
+        for mutate in (
+            lambda x:x.update(restrictions=None),
+            lambda x:x['restrictions']['users'].append({'login':'other'}),
+            lambda x:x['restrictions']['teams'].append({'slug':'writers'}),
+            lambda x:x['restrictions']['apps'].append({'slug':'renovate'}),
+            lambda x:x['enforce_admins'].update(enabled=False),
+            lambda x:x['allow_force_pushes'].update(enabled=True),
+            lambda x:x['allow_deletions'].update(enabled=True),
+        ):
+            api.rule=copy.deepcopy(protected);mutate(api.rule)
+            self.assertFalse(api.policy_protected('controller'))
+
+class RepositoryMergeMethodTests(unittest.TestCase):
+    def test_supported_repository_merge_method_is_selected_without_bypass(self):
+        class Fake(GitHub):
+            def get(self,path):return self.settings
+        api=Fake('','x')
+        for settings,method in [({'allow_squash_merge':True},'squash'),({'allow_merge_commit':True},'merge'),({'allow_rebase_merge':True},'rebase')]:
+            api.settings=settings;self.assertEqual(api.merge_method(),method)
+        api.settings={}
+        with self.assertRaises(ValueError):api.merge_method()
+
+class CompactMetadataTests(unittest.TestCase):
+    def test_compact_signed_commit_markers_parse_without_editable_body(self):
+        from renovate_policy import COMPACT_UPDATE
+        items=[{'depName':'x','newValue':'4.0.1','datasource':'npm'},
+               {'depName':'postgres','newValue':'18','newDigest':'sha256:abc','datasource':'docker'}]
+        message='Update dependencies\n\n'+''.join(COMPACT_UPDATE+base64.b64encode(json.dumps(item).encode()).decode()+' -->\n' for item in items)
+        self.assertEqual(updates(message),items)
+
+class ProtectedReceiptAdapterTests(unittest.TestCase):
+    def test_actual_contents_adapter_validates_cas_and_initializes_missing_file(self):
+        import base64,json,urllib.error
+        from renovate_policy import GitHub,validate_receipts
+        api=GitHub('token','owner/repo');requests=[]
+        receipt={'1:abc':{'state':{'sha':'abc','runs':{'ci.yml':{'run_id':1,'attempt':1,'retried':True}}}}}
+        def missing(path):raise urllib.error.HTTPError('https://api.github.com/fixture',404,'fixture',{},None)
+        api.get=missing
+        with self.assertRaisesRegex(ValueError,'initialization'):api.read_receipts()
+        def request(method,path,data):requests.append((method,path,data));return {'content':{'sha':'next'}}
+        api.request=request
+        self.assertEqual(api.write_receipts(receipt,None),'next')
+        self.assertNotIn('sha',requests[-1][2])
+        api.write_receipts(receipt,'old');self.assertEqual(requests[-1][2]['sha'],'old')
+        api.get=lambda path:{'sha':'next','content':base64.b64encode(json.dumps(receipt).encode()).decode()}
+        self.assertEqual(api.read_receipts(),(receipt,'next'))
+        for invalid in ([],{'1:abc':{}},{'1:abc':{'state':{'sha':'other','runs':{}}}}):
+            with self.assertRaises(ValueError):validate_receipts(invalid)
+
+class RulesetProtectionTests(unittest.TestCase):
+    def test_active_or_unknown_inherited_rulesets_fail_closed(self):
+        api=GitHub('token','owner/repo');api.controller_login='controller'
+        api.get=lambda path:{'enforce_admins':{'enabled':True},'required_status_checks':{'strict':True,'contexts':['go']},'restrictions':{'users':[{'login':'controller'}],'teams':[],'apps':[]}}
+        paths=[]
+        def pages(path):paths.append(path);return api.rules
+        api.pages=pages
+        for rules in ([{'enforcement':'active'}],[{'enforcement':'unknown'}],[{}]):
+            api.rules=rules;self.assertFalse(api.protection('main',['go']))
+        self.assertEqual(set(paths),{'rulesets?includes_parents=true'})
+    def test_absent_disabled_or_evaluate_rulesets_preserve_classic_requirements(self):
+        api=GitHub('token','owner/repo');api.controller_login='controller'
+        api.get=lambda path:{'enforce_admins':{'enabled':True},'required_status_checks':{'strict':True,'contexts':['go']},'restrictions':{'users':[{'login':'controller'}],'teams':[],'apps':[]}}
+        for rules in ([],[{'enforcement':'disabled'}],[{'enforcement':'evaluate'}]):
+            api.pages=lambda path:rules
+            self.assertTrue(api.protection('main',['go']))
+
+class TargetOwnerProtectionTests(unittest.TestCase):
+    def test_only_owner_can_write_target_and_create_release(self):
+        import copy
+        api=GitHub('token','owner/repo');api.controller_login='controller';api.pages=lambda path:[]
+        rule={'enforce_admins':{'enabled':True},'required_status_checks':{'strict':True,'contexts':['go']},'restrictions':{'users':[{'login':'controller'}],'teams':[],'apps':[]},'block_creations':{'enabled':True}}
+        api.get=lambda path:api.rule
+        api.rule=copy.deepcopy(rule)
+        self.assertTrue(api.protection('main',['go']));self.assertTrue(api.protection('release/1.0.0',['go']))
+        for mutate in (lambda r:r.update(restrictions=None),lambda r:r['restrictions']['users'].append({'login':'writer'}),lambda r:r['restrictions']['apps'].append({'slug':'app'}),lambda r:r['restrictions']['teams'].append({'slug':'team'})):
+            api.rule=copy.deepcopy(rule);mutate(api.rule);self.assertFalse(api.protection('main',['go']))
+        api.rule=copy.deepcopy(rule);api.rule['block_creations']['enabled']=False
+        self.assertTrue(api.protection('main',['go']));self.assertFalse(api.protection('release/1.0.0',['go']))

@@ -18,3 +18,28 @@ jobs:
         with:
           python-version: '3.12'
       - run: timeout 60s python3 -m unittest discover -s scripts -p 'test_renovate*.py'
+
+  runtime-contract:
+    name: Renovate runtime contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      LOG_LEVEL: error
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Set temporary runtime location
+        run: echo "RENOVATE_RUNTIME=$RUNNER_TEMP/renovate-runtime" >> "$GITHUB_ENV"
+      - name: Install pinned Renovate without install scripts
+        run: timeout 600s npm install --prefix "$RENOVATE_RUNTIME" --ignore-scripts --no-audit --no-fund renovate@44.176.2
+      - name: Verify Renovate grouping, retries and digests
+        run: timeout 90s node --experimental-test-module-mocks scripts/test_renovate_runtime.mjs
+      - name: Verify signed commit and PR metadata rendering
+        run: timeout 90s node --experimental-test-module-mocks scripts/test_renovate_metadata_runtime.mjs

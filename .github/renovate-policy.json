@@ -4,7 +4,8 @@
     "lint",
     "api",
     "migrations",
-    "Renovate policy tests"
+    "Renovate policy tests",
+    "Renovate runtime contract"
   ],
   "controllerLogin": "avtomon",
   "ciChecks": [

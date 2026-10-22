@@ -212,3 +212,127 @@ assert.equal(withUnaffected.upgrades.length,2);
 assert.equal(withUnaffected.branchName,originalGroup.branchName);
 assert.equal((await gate(withUnaffected)).result,passed);
 console.log('PASS: recovered and unaffected dependencies remain in one original group');
+
+// Full digest lifecycle: GitHub Actions/Docker digest upgrades need no newMajor.
+async function digestBranch(cfg, tag, digest) {
+  const update = {newValue:tag,newDigest:digest,updateType:'digest'};
+  assert.equal(Object.hasOwn(update,'newMajor'),false);
+  const {branches:[branch]} = await branchifyUpgrades(cfg,{dockerfile:[{
+    packageFile:'Dockerfile',deps:[{depName:'postgres',packageName:'postgres',
+      datasource:'docker',versioning:'docker',currentValue:tag,
+      currentDigest:'sha256:'+'0'.repeat(64),updates:[update]}],
+  }]});
+  assert.equal(Object.hasOwn(branch.upgrades[0],'newMajor'),false);
+  return branch;
+}
+const badDigest = 'sha256:'+'a'.repeat(64);
+const fixedDigest = 'sha256:'+'b'.repeat(64);
+const digestFailure = [{depName:'postgres',datasource:'docker',newValue:'18',newDigest:badDigest}];
+const unmodifiedDigestConfig = config([],{grouped:false});
+const originalDigest = await digestBranch(unmodifiedDigestConfig,'18',badDigest);
+ignore(originalDigest);
+const digestRecoveryConfig = config(failureRules(digestFailure,789),{grouped:false});
+const exactBadDigest = await digestBranch(digestRecoveryConfig,'18',badDigest);
+assert.equal((await gate(exactBadDigest)).result,'needs-approval');
+assert.equal((await explicitApproval(exactBadDigest,digestRecoveryConfig)).result,passed);
+const fixedSameTag = await digestBranch(digestRecoveryConfig,'18',fixedDigest);
+assert.equal(fixedSameTag.branchName,originalDigest.branchName);
+// This assertion detects recovery incorrectly matching newMajor=18: digest updates
+// do not carry newMajor, even though their moving tag happens to contain a number.
+assert.equal(fixedSameTag.recreateClosed,true);
+assert.equal(fixedSameTag.dependencyDashboardApproval,false);
+assert.equal((await gate(fixedSameTag)).result,passed);
+ignore(fixedSameTag);
+assert.equal((await gate(fixedSameTag)).result,passed);
+const otherTag = await digestBranch(unmodifiedDigestConfig,'19',fixedDigest);
+ignore(otherTag);
+const ignoredOtherTag = await digestBranch(digestRecoveryConfig,'19',fixedDigest);
+assert.equal(ignoredOtherTag.recreateClosed,false);
+assert.equal((await gate(ignoredOtherTag)).result,'already-existed');
+console.log('PASS: numeric moving tag recovers fixed digests without newMajor; other tags stay ignored');
+
+// An automatically failed FIN-184 stack remains one jointly approved update.
+function stackRule(generation) {
+  const controller = process.env.RENOVATE_POLICY_SCRIPT ?? fileURLToPath(new URL('./renovate_policy.py',import.meta.url));
+  const code = "import importlib.util,json,sys; s=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(m.compose_stack_rule(int(sys.argv[2]))))";
+  return JSON.parse(execFileSync('python3',['-c',code,controller,String(generation)],{encoding:'utf8',timeout:5000}));
+}
+const firstStackRule = stackRule(987);
+const stackBaseline = {matchPackageNames:firstStackRule.matchPackageNames,
+  groupName:'androidx compose stack',separateMajorMinor:false,automerge:false};
+function stackDependencies(fixed = false) {
+  return [
+    ['androidx.compose:compose-bom',fixed?'2026.10.2':'2026.10.1','minor'],
+    ['androidx.activity:activity-compose',fixed?'1.10.2':'1.10.1','minor'],
+    ['androidx.navigation:navigation-compose',fixed?'3.0.2':'3.0.1','major'],
+  ].map(([name,value,type])=>({...dependency(name,value,'1.0.0',type),datasource:'maven'}));
+}
+const stackBaselineConfig = config([stackBaseline],{grouped:false});
+const [originalStack] = await branches(stackBaselineConfig,stackDependencies());
+assert.equal(originalStack.upgrades.length,3);
+assert.equal(originalStack.automerge,false);
+ignore(originalStack);
+const stackConfig = config([stackBaseline,firstStackRule],{grouped:false});
+const pendingStack = await branches(stackConfig,stackDependencies());
+assert.equal(pendingStack.length,1);
+assert.equal(pendingStack[0].upgrades.length,3);
+assert.equal(pendingStack[0].groupName,'androidx compose stack');
+assert.equal(pendingStack[0].automerge,false);
+assert.equal((await gate(pendingStack[0])).result,'needs-approval');
+await ensureDependencyDashboard({...stackConfig,dependencyDashboardChecks:{}},
+  [{...pendingStack[0],result:'needs-approval'}],{},{});
+assert.equal((dashboardBody.match(/<!-- approve-branch=/g)??[]).length,1);
+assert.equal((await explicitApproval(pendingStack[0],stackConfig)).result,passed);
+const futureStack = await branches(stackConfig,stackDependencies(true));
+assert.equal(futureStack.length,1);
+assert.equal(futureStack[0].upgrades.length,3);
+assert.equal(futureStack[0].branchName,pendingStack[0].branchName);
+assert.equal(futureStack[0].automerge,false);
+assert.equal((await gate(futureStack[0])).result,'needs-approval');
+ignore(pendingStack[0]);
+const nextStackConfig = config([stackBaseline,stackRule(988)],{grouped:false});
+const [nextStack] = await branches(nextStackConfig,stackDependencies(true));
+assert.ok(nextStack.branchName.includes('fin211-retry-988-'));
+assert.equal(nextStack.upgrades.length,3);
+assert.equal(nextStack.automerge,false);
+assert.equal((await gate(nextStack)).result,'needs-approval');
+assert.equal((await explicitApproval(nextStack,nextStackConfig)).result,passed);
+console.log('PASS: failed Compose stack stays one approval group across fixes and repeat failures without automerge');
+
+// A later immortal group containing only unaffected updates is not quarantined.
+const [previousMixedGroup] = await branches(config([]),[dependency('a','4.0.0'),dependency('b','5.0.0')]);
+ignore(previousMixedGroup);
+const unaffectedOnly = await branches(config(failureRules([update('a','4.0.0'),update('b','5.0.0')])),
+  [dependency('c','3.0.0'),dependency('d','6.0.0')]);
+assert.equal(unaffectedOnly.length,1);
+assert.equal(unaffectedOnly[0].branchName,previousMixedGroup.branchName);
+assert.equal(unaffectedOnly[0].prTitle,previousMixedGroup.prTitle);
+assert.equal(unaffectedOnly[0].recreateClosed,true);
+assert.equal(unaffectedOnly[0].dependencyDashboardApproval,false);
+assert.equal((await gate(unaffectedOnly[0])).result,passed);
+console.log('PASS: an unaffected-only immortal group remains eligible after a prior group failure');
+
+// A later singleton outside the failed dependencies must also remain eligible.
+const [unaffectedSingleton] = await branches(config(failureRules([update('a','4.0.0'),update('b','5.0.0')])),
+  [dependency('c','5.0.1')]);
+assert.equal(unaffectedSingleton.upgrades.length,1);
+assert.equal(unaffectedSingleton.branchName,previousMixedGroup.branchName);
+assert.equal(unaffectedSingleton.dependencyDashboardApproval,false);
+assert.equal((await gate(unaffectedSingleton)).result,passed);
+console.log('PASS: a single unaffected update remains eligible after the previous group closes');
+
+// Group behavior must not depend on the recovered dependency sorting first.
+const [beforeRecoveredOriginal] = await branches(config([]),[dependency('a','4.0.0'),dependency('z','5.0.0')]);
+ignore(beforeRecoveredOriginal);
+const [unaffectedSortsFirst] = await branches(config(failureRules([update('z','5.0.0')])),
+  [dependency('a','4.0.1'),dependency('z','5.0.1')]);
+assert.equal(unaffectedSortsFirst.upgrades.length,2);
+assert.equal(unaffectedSortsFirst.depName,'a');
+assert.equal(unaffectedSortsFirst.upgrades[0].recreateWhen,'auto');
+assert.equal(unaffectedSortsFirst.upgrades[1].recreateWhen,'always');
+assert.equal(unaffectedSortsFirst.branchName,beforeRecoveredOriginal.branchName);
+assert.equal(unaffectedSortsFirst.prTitle,beforeRecoveredOriginal.prTitle);
+assert.equal(unaffectedSortsFirst.recreateClosed,true);
+assert.equal(unaffectedSortsFirst.dependencyDashboardApproval,false);
+assert.equal((await gate(unaffectedSortsFirst)).result,passed);
+console.log('PASS: unaffected dependency sorts before recovered member without blocking the group');

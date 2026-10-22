@@ -3,10 +3,6 @@ on:
   workflow_run:
     workflows: [CI, ci, Renovate policy tests]
     types: [completed]
-  create:
-  delete:
-  push:
-    branches: [main, 'release/**']
   schedule:
     - cron: '17,47 * * * *'
   workflow_dispatch:
@@ -18,7 +14,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   reconcile:
-    if: vars.RENOVATE_POLICY_ENABLED == 'true'
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    environment: renovate-policy
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

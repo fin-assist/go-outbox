@@ -2,6 +2,7 @@
 """Trusted default-branch controller for hosted Renovate, without merge bypasses."""
 import argparse
 import base64
+import fnmatch
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,9 @@ BOT = 'renovate[bot]'
 POLICY_BRANCH = 'renovate-policy'
 MARKER = '<!-- fin211-state '
 UPDATES = '<!-- fin211-updates '
+COMPACT_UPDATE = '<!-- fin211-update '
+PER_UPDATE_NOTE = "<!-- fin211-update {{{encodeBase64 (toJSON (toObject 'depName' depName 'packageName' packageName 'newValue' newValue 'datasource' datasource 'newDigest' newDigest 'newMajor' newMajor))}}} -->"
+METADATA_TEMPLATE = '{{#each upgrades}}' + PER_UPDATE_NOTE + '\n{{/each}}'
 
 
 def selected_base(branches, merged, ancestor):
@@ -31,10 +35,18 @@ def selected_base(branches, merged, ancestor):
 
 
 def updates(body):
-    match = re.search(re.escape(UPDATES) + r'(.+?) -->', body or '')
-    if not match:
-        return []
-    data = json.loads(base64.b64decode(match[1], validate=True))
+    markers = re.findall(re.escape(COMPACT_UPDATE) + r'(.+?) -->', body or '')
+    if markers:
+        if len(markers) > 100:
+            raise ValueError('Oversized Renovate metadata')
+        data = [json.loads(base64.b64decode(marker, validate=True)) for marker in markers]
+    else:
+        # Parse legacy data for compatibility with saved fixtures; production uses
+        # compact markers in the signed head commit, never the editable PR body.
+        match = re.search(re.escape(UPDATES) + r'(.+?) -->', body or '')
+        if not match:
+            return []
+        data = json.loads(base64.b64decode(match[1], validate=True))
     if not isinstance(data, list) or not 0 < len(data) <= 100:
         raise ValueError('Missing or oversized Renovate metadata')
     result = []
@@ -57,9 +69,35 @@ def updates(body):
     return result
 
 
+COMPOSE_STACK_PACKAGES = [
+    'androidx.compose:compose-bom', 'androidx.activity:**', 'androidx.core:**',
+    'androidx.fragment:**', 'androidx.hilt:hilt-navigation-compose',
+    'androidx.lifecycle:**', 'androidx.navigation:**',
+]
+
+
+def compose_package(name):
+    return name.startswith(('androidx.', 'org.jetbrains.compose',
+                            'org.jetbrains.kotlin.plugin.compose',
+                            'org.jetbrains.kotlin:compose-compiler-gradle-plugin'))
+
+
 def compose_update(items):
-    # Conservatively keep all AndroidX, Compose and mixed groups for the owner.
-    return any(x['depName'].startswith(('androidx.', 'org.jetbrains.compose')) for x in items)
+    return any(compose_package(item['depName']) for item in items)
+
+
+def compose_stack_member(item):
+    return any(fnmatch.fnmatchcase(item['depName'], pattern) for pattern in COMPOSE_STACK_PACKAGES)
+
+
+def compose_stack_rule(generation):
+    return {
+        'description': 'FIN-211: failed Compose stack requires grouped Dashboard approval',
+        'matchPackageNames': COMPOSE_STACK_PACKAGES,
+        'groupName': 'androidx compose stack', 'separateMajorMinor': False,
+        'dependencyDashboardApproval': True, 'recreateWhen': 'never',
+        'additionalBranchPrefix': f'fin211-retry-{generation}-', 'automerge': False,
+    }
 
 
 def quarantine_rules(items, generation):
@@ -96,13 +134,16 @@ def recovery_rules(items, generation):
             'recreateWhen': 'always',
         }
         major = item.get('newMajor')
+        if type(major) is not int and item.get('newDigest') and item.get('newValue'):
+            # Digest lookup has no newMajor: a numeric tag is still a tag.
+            rule['matchNewValue'] = '/^' + re.escape(item['newValue']) + '$/'
+            rules.append(rule)
+            continue
         if type(major) is not int:
             match = re.match(r'^[~^=v ]*(\d+)(?:\.|$)', item.get('newValue') or '')
             major = int(match[1]) if match else None
         if major is not None:
             rule['matchJsonata'] = ['newMajor = ' + str(major)]
-        elif item.get('newDigest') and item.get('newValue'):
-            rule['matchNewValue'] = '/^' + re.escape(item['newValue']) + '$/'
         else:
             # Opaque non-major values use their version-specific default PR keys.
             continue
@@ -141,9 +182,10 @@ def terminal_checks(jobs, names):
 class GitHub:
     def __init__(self, token, repo, read_token=None):
         self.token, self.repo, self.read_token = token, repo, read_token
+        self.controller_login = None
 
     def request(self, method, path, data=None):
-        url = 'https://api.github.com/repos/' + self.repo + '/' + path
+        url = 'https://api.github.com' + path if path.startswith('/') else 'https://api.github.com/repos/' + self.repo + '/' + path
         token = self.read_token if method == 'GET' and '/check-runs' in path else self.token
         if not token:
             raise ValueError('Read-only checks token is required')
@@ -191,6 +233,26 @@ class GitHub:
                 'message': 'Sync approved Renovate baseline from target branch',
                 'content': base64.b64encode(baseline).decode()})
 
+    def read_receipts(self):
+        try:
+            obj = self.get('contents/state.json?ref=' + POLICY_BRANCH)
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                raise ValueError('Protected state.json missing; explicit owner initialization required') from error
+            raise
+        data = json.loads(base64.b64decode(obj['content']))
+        validate_receipts(data)
+        return data, obj['sha']
+
+    def write_receipts(self, data, sha):
+        validate_receipts(data)
+        payload = {'branch': POLICY_BRANCH, 'message': 'Persist immutable Renovate retry receipts',
+                   'content': base64.b64encode((json.dumps(data, indent=2) + '\n').encode()).decode()}
+        if sha is not None:
+            payload['sha'] = sha
+        response = self.request('PUT', 'contents/state.json', payload)
+        return response['content']['sha']
+
     def bootstrap(self):
         try:
             self.get('git/ref/heads/' + POLICY_BRANCH)
@@ -199,7 +261,7 @@ class GitHub:
             if error.code != 404:
                 raise
         policy = {'baseBranchPatterns': [self.base()], 'packageRules': []}
-        tree = self.request('POST', 'git/trees', {'tree': [{'path': 'policy.json', 'mode': '100644', 'type': 'blob', 'content': json.dumps(policy, indent=2)+'\n'}, {'path': 'base.json', 'mode': '100644', 'type': 'blob', 'content': Path('renovate-base.json').read_text()}]})
+        tree = self.request('POST', 'git/trees', {'tree': [{'path': 'policy.json', 'mode': '100644', 'type': 'blob', 'content': json.dumps(policy, indent=2)+'\n'}, {'path': 'base.json', 'mode': '100644', 'type': 'blob', 'content': Path('renovate-base.json').read_text()}, {'path': 'state.json', 'mode': '100644', 'type': 'blob', 'content': '{}\n'}]})
         commit = self.request('POST', 'git/commits', {'message': 'Initialize generated Renovate policy', 'tree': tree['sha'], 'parents': []})
         self.request('POST', 'git/refs', {'ref': 'refs/heads/' + POLICY_BRANCH, 'sha': commit['sha']})
 
@@ -210,9 +272,12 @@ class GitHub:
             if error.code == 404:
                 raise ValueError('Policy branch not bootstrapped; see docs/renovate-policy.md') from error
             raise
-        return json.loads(base64.b64decode(obj['content'])), obj['sha']
+        from renovate_policy_data import validate_policy
+        return validate_policy(json.loads(base64.b64decode(obj['content']))), obj['sha']
 
     def write_policy(self, policy, sha):
+        from renovate_policy_data import validate_policy
+        validate_policy(policy)
         self.request('PUT', 'contents/policy.json', {
             'branch': POLICY_BRANCH, 'sha': sha,
             'message': 'Update Renovate target and failed-version approvals',
@@ -253,6 +318,8 @@ class GitHub:
             seen = set()
             for job in jobs:
                 name = job['name']
+                if name not in names:
+                    continue
                 if (name in seen or job.get('run_id', run['id']) != run['id']
                         or job.get('head_sha', run['head_sha']) != run['head_sha']):
                     return []
@@ -284,7 +351,7 @@ class GitHub:
             return False
         files = self.pages(f"pulls/{pr['number']}/files")
         for item in files:
-            if re.search(r'androidx[.:]|org\.jetbrains\.compose', item.get('patch', '')):
+            if re.search(r'androidx[.:]|org\.jetbrains\.(?:compose|kotlin\.plugin\.compose)|compose-compiler-gradle-plugin', item.get('patch', '')):
                 return True
         if not any(f['filename'] == 'gradle/libs.versions.toml' for f in files):
             return False
@@ -295,14 +362,21 @@ class GitHub:
             catalogs.append(tomllib.loads(base64.b64decode(content['content']).decode()))
         def stack(catalog):
             result = {}
-            for key, lib in catalog.get('libraries', {}).items():
-                module = lib.get('module', lib.get('group', '') + ':' + lib.get('name', ''))
-                if not module.startswith(('androidx.', 'org.jetbrains.compose')):
-                    continue
-                version = lib.get('version')
-                if isinstance(version, dict) and 'ref' in version:
-                    version = catalog.get('versions', {}).get(version['ref'])
-                result[key] = (module, version)
+            for section in ('libraries', 'plugins'):
+                for key, item in catalog.get(section, {}).items():
+                    if isinstance(item, str):
+                        name, _, version = item.rpartition(':')
+                        if section == 'libraries':
+                            name = ':'.join(item.split(':')[:2])
+                    elif isinstance(item, dict):
+                        name = item.get('id', '') if section == 'plugins' else item.get('module', item.get('group', '') + ':' + item.get('name', ''))
+                        version = item.get('version')
+                        if isinstance(version, dict) and 'ref' in version:
+                            version = catalog.get('versions', {}).get(version['ref'])
+                    else:
+                        continue
+                    if compose_package(name):
+                        result[(section, key)] = (name, version)
             return result
         return stack(catalogs[0]) != stack(catalogs[1])
 
@@ -329,12 +403,43 @@ class GitHub:
             result.extend(evidence)
         return result
 
+    def merge_method(self):
+        settings = self.get('')
+        for key, method in [('allow_squash_merge', 'squash'), ('allow_merge_commit', 'merge'), ('allow_rebase_merge', 'rebase')]:
+            if settings.get(key) is True:
+                return method
+        raise ValueError('Repository permits no supported merge method')
+
+    def identity(self):
+        return self.get('/user').get('login')
+
+    def policy_protected(self, login):
+        rule = self.get('branches/' + POLICY_BRANCH + '/protection')
+        restrictions = rule.get('restrictions') or {}
+        users = [user.get('login') for user in restrictions.get('users', [])]
+        return (rule.get('enforce_admins', {}).get('enabled') is True
+                and users == [login] and restrictions.get('teams') == []
+                and restrictions.get('apps') == []
+                and rule.get('allow_force_pushes', {}).get('enabled') is False
+                and rule.get('allow_deletions', {}).get('enabled') is False)
+
     def protection(self, base, names):
         # Refuse unprotected branches and missing checks. No admin or ruleset bypass.
         rule = self.get('branches/' + urllib.parse.quote(base, safe='') + '/protection')
         checks = rule.get('required_status_checks') or {}
-        return (rule.get('enforce_admins', {}).get('enabled') is True
-                and checks.get('strict') is True and set(names) <= set(checks.get('contexts', [])))
+        classic = (rule.get('enforce_admins', {}).get('enabled') is True
+                   and checks.get('strict') is True and set(names) <= set(checks.get('contexts', [])))
+        restrictions = rule.get('restrictions') or {}
+        owned = (self.controller_login is not None
+                 and [user.get('login') for user in restrictions.get('users', [])] == [self.controller_login]
+                 and restrictions.get('teams') == [] and restrictions.get('apps') == []
+                 and (not base.startswith('release/') or rule.get('block_creations', {}).get('enabled') is True))
+        if not classic or not owned:
+            return False
+        # Until explicitly supported, active inherited/repository rulesets may
+        # grant our owner actor bypass of additional requirements. Fail closed.
+        return all(rule.get('enforcement') in ('disabled', 'evaluate')
+                   for rule in self.pages('rulesets?includes_parents=true'))
 
 
 def retry_decision(runs, state, sha):
@@ -369,118 +474,194 @@ def retry_decision(runs, state, sha):
         for name, run in runs.items()}}}
 
 
-def reconcile(api, config, trigger=None):
+def validate_receipts(data):
+    if not isinstance(data, dict) or len(json.dumps(data)) > 1000000:
+        raise ValueError('Invalid or oversized protected retry state; owner retention review required')
+    for key, receipt in data.items():
+        if (not isinstance(key, str) or not re.fullmatch(r'[1-9][0-9]*:[A-Za-z0-9]{1,128}', key)
+                or not isinstance(receipt, dict) or set(receipt) - {'state', 'comment_id'}
+                or not isinstance(receipt.get('state'), dict)):
+            raise ValueError('Invalid protected retry receipt')
+        state = receipt['state']
+        if set(state) != {'sha', 'runs'} or key.split(':', 1)[1] != state['sha'] or not isinstance(state['runs'], dict) or not state['runs']:
+            raise ValueError('Invalid protected retry state')
+        for workflow, run in state['runs'].items():
+            if (workflow not in ('ci.yml', 'renovate-policy-tests.yml') or not isinstance(run, dict)
+                    or set(run) != {'run_id', 'attempt', 'retried'}
+                    or type(run['run_id']) is not int or run['run_id'] < 1
+                    or type(run['attempt']) is not int or run['attempt'] < 1
+                    or type(run['retried']) is not bool):
+                raise ValueError('Invalid protected run receipt')
+        if 'comment_id' in receipt and (type(receipt['comment_id']) is not int or receipt['comment_id'] < 1):
+            raise ValueError('Invalid protected comment identity')
+
+
+def reconcile(api, config, trigger=None, mutate_prs=True):
+    if api.identity() != config['controllerLogin']:
+        raise ValueError('Mutation credential identity differs from controllerLogin; no retry claim is allowed')
+    api.controller_login = config['controllerLogin']
+    if not api.policy_protected(config['controllerLogin']):
+        raise ValueError('Generated preset branch must restrict pushes to the controller identity, with admins enforced and force/delete disabled')
     base = api.base()
-    api.sync_baseline(base)
     policy, policy_sha = api.read_policy()
+    if not api.protection(base, config['requiredChecks']):
+        raise ValueError('Target branch must enforce required CI and administrator protection before preset sync')
+    api.sync_baseline(base)
     if policy.get('baseBranchPatterns') != [base]:
         policy['baseBranchPatterns'] = [base]
         api.write_policy(policy, policy_sha)
         policy, policy_sha = api.read_policy()
+    if not mutate_prs:
+        print('Renovate PR mutations disabled; configuration synchronized')
+        return
+    failures = []
     for candidate in api.pages('pulls?state=open'):
-        if candidate.get('user', {}).get('id') != BOT_ID:
-            continue
-        number = candidate['number']
-        pr = api.get(f'pulls/{number}')
-        commits = api.signed_commits(number)
-        if not trusted(pr, commits, api.repo) or pr['base']['ref'] != base:
-            continue
-        sha = pr['head']['sha']
         try:
-            items = updates(pr.get('body'))
-        except (ValueError, TypeError):
-            print(f'PR {number}: invalid metadata; owner review required')
-            continue
-        # Older PRs without structured metadata remain for the owner; never guess.
-        if not items:
-            continue
-        workflow_checks = {'ci.yml': config.get('ciChecks', [name for name in config['requiredChecks']
-                                                                if name != 'Renovate policy tests'])}
-        if 'Renovate policy tests' in config['requiredChecks']:
-            workflow_checks['renovate-policy-tests.yml'] = ['Renovate policy tests']
-        runs = api.current_runs(pr, workflow_checks)
-        if any(not run for run in runs.values()):
-            continue
-        if trigger and not any(all(trigger.get(k) == run.get(k)
-                                   for k in ('id', 'run_attempt', 'head_sha')) for run in runs.values()):
-            continue
-        if not api.protection(base, config['requiredChecks']):
-            continue
-        jobs, required = [], []
-        complete = True
-        for workflow, run in runs.items():
-            current_jobs = api.workflow_jobs(run, workflow_checks[workflow])
-            current_required = terminal_checks(current_jobs, workflow_checks[workflow])
-            if (run['head_sha'] != sha or run['status'] != 'completed'
-                    or run['conclusion'] not in ('success', 'failure') or not current_required):
-                complete = False
-                break
-            jobs.extend(current_jobs)
-            required.extend(current_required)
-        if not complete:
-            continue
-        all_checks = api.pages(f'commits/{sha}/check-runs', 'check_runs')
-        all_statuses = api.get(f'commits/{sha}/status')
-        native = api.native_checks(base, all_checks, all_statuses['statuses'], jobs)
-        if not native:
-            continue
+            reconcile_pr(api, config, base, candidate, trigger)
+        except (urllib.error.HTTPError, urllib.error.URLError, ValueError, KeyError, AttributeError, TypeError, OSError) as error:
+            number = candidate.get('number', '?')
+            print(f'PR {number}: {type(error).__name__}; owner inspection required; continuing other PRs')
+            failures.append(str(number))
+    if failures:
+        raise ValueError('Renovate reconciliation failed for PRs: ' + ', '.join(failures))
+
+
+def reconcile_pr(api, config, base, candidate, trigger):
+    if candidate.get('user', {}).get('id') != BOT_ID:
+        return
+    number = candidate['number']
+    pr = api.get(f'pulls/{number}')
+    commits = api.signed_commits(number)
+    if not trusted(pr, commits, api.repo) or pr['base']['ref'] != base:
+        return
+    sha = pr['head']['sha']
+    try:
+        head = next((commit for commit in commits if commit.get('sha') == sha), None)
+        items = updates(head.get('commit', {}).get('message')) if head else []
+    except (ValueError, TypeError):
+        print(f'PR {number}: invalid metadata; owner review required')
+        return
+    # Older PRs without structured metadata remain for the owner; never guess.
+    if not items:
+        return
+    workflow_checks = {'ci.yml': config.get('ciChecks', [name for name in config['requiredChecks']
+                                                            if name not in ('Renovate policy tests', 'Renovate runtime contract')])}
+    if 'Renovate policy tests' in config['requiredChecks']:
+        workflow_checks['renovate-policy-tests.yml'] = [name for name in ('Renovate policy tests', 'Renovate runtime contract') if name in config['requiredChecks']]
+    runs = api.current_runs(pr, workflow_checks)
+    if any(not run for run in runs.values()):
+        return
+    if trigger and not any(all(trigger.get(k) == run.get(k)
+                               for k in ('id', 'run_attempt', 'head_sha')) for run in runs.values()):
+        return
+    if not api.protection(base, config['requiredChecks']):
+        return
+    jobs, required, verdicts = [], [], {}
+    complete = True
+    for workflow, run in runs.items():
+        current_jobs = api.workflow_jobs(run, workflow_checks[workflow])
+        current_required = terminal_checks(current_jobs, workflow_checks[workflow])
+        if (run['head_sha'] != sha or run['status'] != 'completed'
+                or run['conclusion'] not in ('success', 'failure') or not current_required):
+            complete = False
+            break
+        jobs.extend(current_jobs)
+        required.extend(current_required)
+        verdicts[workflow] = dict(run, conclusion='failure' if any(job['conclusion'] == 'failure' for job in current_required) else 'success')
+    if not complete:
+        return
+    all_checks = api.pages(f'commits/{sha}/check-runs', 'check_runs')
+    all_statuses = api.get(f'commits/{sha}/status')
+    native = api.native_checks(base, all_checks, all_statuses['statuses'], jobs)
+    if not native:
+        return
+    receipts, receipt_sha = api.read_receipts()
+    receipt_key = str(number) + ':' + sha
+    receipt = receipts.get(receipt_key)
+    state = receipt['state'] if receipt else None
+    if all(j['conclusion'] == 'success' for j in required):
+        if compose_update(items) or api.android_stack_changed(pr):
+            return
+        # All native required checks/statuses must be green.
+        if any(c['conclusion'] != 'success' for c in native):
+            return
+        merge_method = api.merge_method()
+        current = api.fresh(number, sha, base, runs)
+        if current and current.get('mergeable') is True and current.get('mergeable_state') in ('clean', 'unstable'):
+            api.request('PUT', f'pulls/{number}/merge', {'sha': sha, 'merge_method': merge_method})
+        return
+    decision = retry_decision(verdicts, state, sha)
+    if decision['action'] == 'retry' and api.fresh(number, sha, base, runs):
+        # Claim before calling rerun: event redelivery never spends a second retry.
+        body = MARKER + json.dumps(decision['state']) + ' -->\nОдин автоматический повтор упавших проверок CI для SHA `' + sha + '`.'
+        # Protected state is authority. Comments are editable/deletable UX only.
+        receipts[receipt_key] = {'state': decision['state']}
+        receipt_sha = api.write_receipts(receipts, receipt_sha)
+        claim = api.request('POST', f'issues/{number}/comments', {'body': body})
+        if (claim.get('user') or {}).get('login') != config['controllerLogin']:
+            raise ValueError('Retry claim author differs from authenticated controller identity')
+        receipts[receipt_key]['comment_id'] = claim['id']
+        api.write_receipts(receipts, receipt_sha)
+        try:
+            dispatched = set()
+            for workflow, run in runs.items():
+                if verdicts[workflow]['conclusion'] == 'failure':
+                    # Already dispatched runs may now be queued/in progress.
+                    # Every remaining run must still match the claimed snapshot.
+                    remaining = {name: value for name, value in runs.items() if name not in dispatched}
+                    if not api.fresh(number, sha, base, remaining):
+                        api.request('PATCH', f"issues/comments/{claim['id']}", {'body': body + '\nОставшиеся повторы не запрошены: head, цель или run изменились после claim. Claim сохранён; владелец проверяет Actions перед ручным повтором.'})
+                        break
+                    api.request('POST', f"actions/runs/{run['id']}/rerun-failed-jobs")
+                    dispatched.add(workflow)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+            api.request('PATCH', f"issues/comments/{claim['id']}", {'body': body + '\nЗапрос повтора завершился ошибкой API; claim сохранён, чтобы не запускать дубликаты. Владелец: проверьте Actions run и при необходимости вручную выберите Re-run failed jobs. Следующая завершённая попытка будет оценена автоматически.'})
+            raise
+    elif decision['action'] == 'close' and api.fresh(number, sha, base, runs):
+        stack_failed = api.repo == 'fin-assist/android' and any(compose_stack_member(item) for item in items)
+        ordinary_items = [item for item in items if not (stack_failed and compose_stack_member(item))]
+        recovery = recovery_rules(ordinary_items, number)
+        new_rules = quarantine_rules(ordinary_items, number)
+        if stack_failed:
+            new_rules.append(compose_stack_rule(number))
+        policy, policy_sha = api.read_policy()
+        rules = policy.setdefault('packageRules', [])
+        for rule in recovery + new_rules:
+            rules[:] = [old for old in rules if (old.get('matchPackageNames'),old.get('matchDatasources'),old.get('matchNewValue'),old.get('matchJsonata')) != (rule['matchPackageNames'],rule.get('matchDatasources'),rule.get('matchNewValue'),rule.get('matchJsonata'))]
+            rules.append(rule)
+        # Exact failed values override family recreation.
+        rules.sort(key=lambda rule: rule.get('description') != 'FIN-211: recovery of an automatically failed dependency family')
+        # Persist version-scoped approval BEFORE closing, including major/groups.
+        api.write_policy(policy, policy_sha)
+        current = api.fresh(number, sha, base, runs)
+        if not current:
+            return
+        failed = '\n'.join('- [' + j['name'] + '](' + j['html_url'] + ')' for j in required if j['conclusion'] == 'failure')
+        body = (MARKER + json.dumps(dict(state, closed=True)) + ' -->\n'
+                + 'CI повторно упал на SHA `' + sha + '`. Попытки: ' + ', '.join(name + '=' + str(value['run_attempt']) for name, value in runs.items()) + '.\n' + failed
+                + '\nПовторное падение подтверждено; запрошено автоматическое закрытие. Контроллер ветку не удаляет. Повтор: отметьте обновление в Closed/Ignored или Pending Approval в Dependency Dashboard. '
+                + ('Стек FIN-184 остаётся одной видимой Pending Approval группой: будущие версии требуют совместного Dashboard approval и ручной UI-проверки. ' if stack_failed else 'Новые значения версий (включая исправления безопасности) не блокируются этим ограничением; та же версия требует явного подтверждения. ')
+                + 'См. docs/renovate-policy.md.')
+        # A collaborator may edit/delete comments; neither changes the receipt.
+        comment_id = receipt.get('comment_id')
         comments = api.pages(f'issues/{number}/comments')
-        records = [c for c in comments if c['user']['login'] == config['controllerLogin'] and c['body'].startswith(MARKER)]
-        state = json.loads(records[-1]['body'].split(MARKER, 1)[1].split(' -->', 1)[0]) if records else None
-        if all(run['conclusion'] == 'success' for run in runs.values()) and all(j['conclusion'] == 'success' for j in required):
-            if compose_update(items) or api.android_stack_changed(pr):
-                continue
-            # All native required checks/statuses must be green.
-            if any(c['conclusion'] != 'success' for c in native):
-                continue
-            current = api.fresh(number, sha, base, runs)
-            if current and current.get('mergeable') is True and current.get('mergeable_state') == 'clean':
-                api.request('PUT', f'pulls/{number}/merge', {'sha': sha, 'merge_method': 'squash'})
-            continue
-        decision = retry_decision(runs, state, sha)
-        if decision['action'] == 'retry' and api.fresh(number, sha, base, runs):
-            # Claim before calling rerun: event redelivery never spends a second retry.
-            body = MARKER + json.dumps(decision['state']) + ' -->\nОдин автоматический повтор упавших проверок CI для SHA `' + sha + '`.'
-            claim = api.request('POST', f'issues/{number}/comments', {'body': body})
-            try:
-                dispatched = set()
-                for workflow, run in runs.items():
-                    if run['conclusion'] == 'failure':
-                        # Already dispatched runs may now be queued/in progress.
-                        # Every remaining run must still match the claimed snapshot.
-                        remaining = {name: value for name, value in runs.items() if name not in dispatched}
-                        if not api.fresh(number, sha, base, remaining):
-                            break
-                        api.request('POST', f"actions/runs/{run['id']}/rerun-failed-jobs")
-                        dispatched.add(workflow)
-            except (urllib.error.HTTPError, urllib.error.URLError):
-                api.request('PATCH', f"issues/comments/{claim['id']}", {'body': body + '\nЗапрос повтора завершился ошибкой API; claim сохранён, чтобы не запускать дубликаты. Владелец: проверьте Actions run и при необходимости вручную выберите Re-run failed jobs. Следующая завершённая попытка будет оценена автоматически.'})
-                raise
-        elif decision['action'] == 'close' and api.fresh(number, sha, base, runs):
-            recovery = recovery_rules(items, number)
-            new_rules = quarantine_rules(items, number)
-            policy, policy_sha = api.read_policy()
-            rules = policy.setdefault('packageRules', [])
-            for rule in recovery + new_rules:
-                rules[:] = [old for old in rules if (old.get('matchPackageNames'),old.get('matchDatasources'),old.get('matchNewValue'),old.get('matchJsonata')) != (rule['matchPackageNames'],rule['matchDatasources'],rule.get('matchNewValue'),rule.get('matchJsonata'))]
-                rules.append(rule)
-            # Exact failed values override family recreation.
-            rules.sort(key=lambda rule: rule.get('description') != 'FIN-211: recovery of an automatically failed dependency family')
-            # Persist version-scoped approval BEFORE closing, including major/groups.
-            api.write_policy(policy, policy_sha)
-            current = api.fresh(number, sha, base, runs)
-            if not current:
-                continue
-            failed = '\n'.join('- [' + j['name'] + '](' + j['html_url'] + ')' for j in required if j['conclusion'] == 'failure')
-            body = (MARKER + json.dumps(dict(state, closed=True)) + ' -->\n'
-                    + 'CI повторно упал на SHA `' + sha + '`. Попытки: ' + ', '.join(name + '=' + str(value['run_attempt']) for name, value in runs.items()) + '.\n' + failed
-                    + '\nПовторное падение подтверждено; запрошено автоматическое закрытие. Контроллер ветку не удаляет. Повтор: отметьте обновление в Closed/Ignored или Pending Approval в Dependency Dashboard. '
-                    + 'Новые значения версий (включая исправления безопасности) не блокируются этим ограничением; '
-                    + 'та же версия или группа требует явного подтверждения. См. docs/renovate-policy.md.')
-            # Update the claim instead of adding another explanation on redelivery.
-            api.request('PATCH', f"issues/comments/{records[-1]['id']}", {'body': body})
-            if api.fresh(number, sha, base, runs):
-                api.request('PATCH', f'pulls/{number}', {'state': 'closed'})
+        if any(comment.get('id') == comment_id for comment in comments):
+            api.request('PATCH', f'issues/comments/{comment_id}', {'body': body})
+        else:
+            # Recover an accepted POST whose response/CAS acknowledgement was lost.
+            # This is UX deduplication only; the protected receipt authorized close.
+            replacement = next((comment for comment in comments
+                                if (comment.get('user') or {}).get('login') == config['controllerLogin']
+                                and comment.get('body') == body), None)
+            if replacement is None:
+                replacement = api.request('POST', f'issues/{number}/comments', {'body': body})
+            latest, latest_sha = api.read_receipts()
+            if latest.get(receipt_key, {}).get('state') != state:
+                raise ValueError('Protected retry receipt changed during comment replacement')
+            latest[receipt_key]['comment_id'] = replacement['id']
+            api.write_receipts(latest, latest_sha)
+        if api.fresh(number, sha, base, runs):
+            api.request('PATCH', f'pulls/{number}', {'state': 'closed'})
 
 
 def main():
@@ -493,16 +674,13 @@ def main():
             raise ValueError('RENOVATE_POLICY_TOKEN is required')
         GitHub(token, os.environ['GITHUB_REPOSITORY']).bootstrap()
         return
-    if os.environ.get('RENOVATE_POLICY_ENABLED') != 'true':
-        print('Renovate controller disabled; no mutations')
-        return
     token = os.environ.get('RENOVATE_POLICY_TOKEN')
     if not token:
         raise ValueError('RENOVATE_POLICY_TOKEN is required; GITHUB_TOKEN is not a merge credential')
     config = json.loads(Path('.github/renovate-policy.json').read_text())
     event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
     trigger = event.get('workflow_run') if os.environ.get('GITHUB_EVENT_NAME') == 'workflow_run' else None
-    reconcile(GitHub(token, os.environ['GITHUB_REPOSITORY'], os.environ.get('GITHUB_READ_TOKEN')), config, trigger)
+    reconcile(GitHub(token, os.environ['GITHUB_REPOSITORY'], os.environ.get('GITHUB_READ_TOKEN')), config, trigger, mutate_prs=os.environ.get('RENOVATE_POLICY_ENABLED') == 'true')
 
 
 if __name__ == '__main__':
