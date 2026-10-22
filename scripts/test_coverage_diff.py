@@ -232,13 +232,19 @@ class ReportTest(unittest.TestCase):
                 (directory / "cover.out").write_text(f"mode: atomic\nexample.com/{name}/same.go:1.1,2.2 1 {count}\n")
             previous = Path.cwd()
             try:
-                os.chdir(root)
+                os.chdir(root / "gen")
                 with patch.object(cd, "ROOT", root), contextlib.redirect_stdout(io.StringIO()) as out:
-                    status = cd.main(["--module-profile", "gen/go", "gen/go/cover.out", "--module-profile", "tools", "tools/cover.out"])
+                    status = cd.main(["--module-profile", "go", "go/cover.out", "--module-profile", "../tools", "../tools/cover.out"])
                     self.assertEqual(status, 0)
                     self.assertIn("50.0 %", out.getvalue())
                     self.assertIn("2 из 4", out.getvalue())
-                for args in [["--empty", "--module-profile", "gen/go", "gen/go/cover.out"], ["--module-profile", "..", "missing.out"]]:
+                (root / "go.mod").write_text(f"module {MOD}\n")
+                (root / "cover.out").write_text(PROFILE)
+                with patch.object(cd, "ROOT", root), contextlib.redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(cd.main(["--profile", "../cover.out", "--summary", "summary.md"]), 0)
+                    self.assertIn("75.0 %", out.getvalue())
+                    self.assertEqual((root / "gen/summary.md").read_text(), out.getvalue() + "\n")
+                for args in [["--empty", "--module-profile", "go", "go/cover.out"], ["--module-profile", "../..", "missing.out"]]:
                     with patch.object(cd, "ROOT", root), contextlib.redirect_stderr(io.StringIO()):
                         with self.assertRaises(SystemExit) as raised:
                             cd.main(args)
@@ -255,6 +261,7 @@ class ReportTest(unittest.TestCase):
         text = workflow.read_text()
         self.assertIn("steps.coverage.outcome == 'success'", text)
         section = text.split("      - name: Coverage comment on the PR\n", 1)[1]
+        self.assertIn("        shell: bash", section)
         # Read the complete publishing step, including every shell line indented by ten spaces.
         lines = section.split("        run: |\n", 1)[1].splitlines()
         script_lines = []
@@ -266,7 +273,7 @@ class ReportTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             gh = root / "gh"
-            gh.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$GH_CALLS"\nprintf "%s\\n" "${GH_COMMENTS:-[]}"\n')
+            gh.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$GH_CALLS"\nif [ "${GH_GET_FAIL:-0}" = 1 ]; then exit 1; fi\nprintf "%s\\n" "${GH_COMMENTS:-[]}"\n')
             gh.chmod(0o755)
             calls = root / "calls"
             env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}", GH_CALLS=str(calls), PR="7", HEAD_SHA="abcdef123", RUN_URL="https://example.test/run")
@@ -279,14 +286,30 @@ class ReportTest(unittest.TestCase):
                 if not content:
                     self.assertFalse(calls.exists(), "an absent/empty report must never replace a valid comment")
                 else:
-                    self.assertIn("issues/7/comments", calls.read_text())
-                    self.assertIn("### Покрытие проекта", (root / "comment.md").read_text())
+                    self.assertEqual(calls.read_text().splitlines(), [
+                        "api repos/fin-assist/example/issues/7/comments --paginate",
+                        "api repos/fin-assist/example/issues/7/comments -F body=@comment.md",
+                    ])
+                    comment = (root / "comment.md").read_text()
+                    self.assertTrue(comment.startswith("<!-- coverage-report (ci.yml) -->"))
+                    self.assertIn("### Покрытие проекта", comment)
+                    self.assertIn("Commit abcdef1", comment)
             import json
             calls.unlink()
             env["GH_COMMENTS"] = json.dumps([{"id": 123, "user": {"login": "github-actions[bot]"}, "body": "<!-- coverage-report (ci.yml) --> old valid report"}])
             result = subprocess.run(["bash", "-eo", "pipefail", "-c", shell], cwd=root, env=env, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("-X PATCH repos/fin-assist/example/issues/comments/123", calls.read_text())
+            self.assertEqual(calls.read_text().splitlines(), [
+                "api repos/fin-assist/example/issues/7/comments --paginate",
+                "api -X PATCH repos/fin-assist/example/issues/comments/123 -F body=@comment.md",
+            ])
+            calls.unlink()
+            env["GH_GET_FAIL"] = "1"
+            result = subprocess.run(["bash", "-eo", "pipefail", "-c", shell], cwd=root, env=env, capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(calls.read_text().splitlines(), [
+                "api repos/fin-assist/example/issues/7/comments --paginate",
+            ], "a failed lookup must not POST or PATCH any comment")
 
     def test_workflow_uses_single_coverage_test_run_and_keeps_fork_guard(self):
         workflow = Path(__file__).resolve().parent.parent / ".github/workflows/ci.yml"

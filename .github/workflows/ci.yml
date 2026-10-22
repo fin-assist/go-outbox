@@ -72,6 +72,7 @@ jobs:
       # One comment per PR, found by its marker and edited on every push. PRs from forks get a
       # read-only token, so they are skipped; a failed post never fails the build.
       - name: Coverage comment on the PR
+        shell: bash # fail a lookup pipeline instead of creating a duplicate comment
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.coverage.outcome == 'success'
         continue-on-error: true
         env:
