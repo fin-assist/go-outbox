@@ -1,0 +1,6 @@
+{
+  "baseBranchPatterns": [
+    "main"
+  ],
+  "packageRules": []
+}
