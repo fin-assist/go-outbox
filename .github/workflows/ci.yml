@@ -26,6 +26,7 @@ jobs:
         with:
           # Full history: coverage of changed lines diffs the PR against its base branch.
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -54,7 +55,8 @@ jobs:
 
       # Informational: the 80 % target for changed lines is checked in review (AGENTS.md, Tests);
       # nothing fails on a low value or a failed script. The branch name goes through env.
-      - name: Coverage of changed lines
+      - name: Project and changed-line coverage
+        id: coverage
         if: github.event_name == 'pull_request'
         continue-on-error: true
         env:
@@ -70,7 +72,8 @@ jobs:
       # One comment per PR, found by its marker and edited on every push. PRs from forks get a
       # read-only token, so they are skipped; a failed post never fails the build.
       - name: Coverage comment on the PR
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && hashFiles('coverage.md') != ''
+        shell: bash # fail a lookup pipeline instead of creating a duplicate comment
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.coverage.outcome == 'success'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -78,6 +81,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          test -s coverage.md || exit 0
           marker='<!-- coverage-report (ci.yml) -->'
           {
             echo "$marker"

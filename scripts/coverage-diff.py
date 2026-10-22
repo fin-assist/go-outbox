@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Test coverage of the lines a branch changes (README.md, «Покрытие изменённых строк»).
+"""Project coverage and coverage of the lines a branch changes (README.md, «Покрытие изменённых строк»).
 
 Reads a Go coverage profile (`go test -coverpkg=./... -coverprofile=cover.out ./...`) and the diff of the
 branch against its base, and reports how many of the changed executable lines of production code the tests
-run. A changed line counts only if a coverage block contains it: comments, declarations, blank lines and
-`_test.go` files do not.
+run. A changed line counts if a nonzero-statement coverage block contains it. This is a line-span metric:
+comments and blank lines inside a block count too. Tests and testdata files are excluded.
 
 Usage:
   make cover                                                     # writes cover.out
@@ -13,6 +13,9 @@ Usage:
   python3 scripts/coverage-diff.py --base … --summary "$GITHUB_STEP_SUMMARY"
   python3 scripts/coverage-diff.py                               # project totals only (no diff)
 
+This identical script is shared by the two Go templates and existing repositories. Root-module CI uses
+one profile; contracts explicitly passes gen/go and tools, and the empty bank-bff scaffold uses --empty.
+All explicitly supplied paths are relative to the current directory; defaults point at the repository root.
 Standard library only, so CI runs it without pip.
 """
 
@@ -20,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -46,8 +50,8 @@ def parse_profile(text: str, module: str) -> dict[str, dict[int, bool]]:
         m = _BLOCK.match(raw.strip())
         if not m:
             continue  # "mode: atomic" header, blank lines
-        path, start, end, _stmts, count = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4), int(m.group(5))
-        if not path.startswith(prefix):
+        path, start, end, stmts, count = m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4)), int(m.group(5))
+        if not path.startswith(prefix) or not stmts:
             continue
         file = lines.setdefault(path[len(prefix):], {})
         for n in range(start, end + 1):
@@ -56,7 +60,7 @@ def parse_profile(text: str, module: str) -> dict[str, dict[int, bool]]:
 
 
 def is_production(path: str) -> bool:
-    """Go source that is not a test and not test data."""
+    """Production Go, including generated code; tests and testdata are excluded."""
     return path.endswith(".go") and not path.endswith("_test.go") and "/testdata/" not in f"/{path}"
 
 
@@ -136,10 +140,12 @@ def totals(profile: dict[str, dict[int, bool]]) -> tuple[int, int]:
     return covered, total
 
 
-def render_diff(results: list[FileResult], base: str, minimum: float | None) -> str:
+def render_diff(results: list[FileResult], base: str, minimum: float | None, available: bool = True) -> str:
     covered = sum(r.covered for r in results)
     total = sum(r.total for r in results)
     out = ["### Покрытие изменённых строк", ""]
+    if not available:
+        return "\n".join(out) + "Нет данных покрытия production-кода; изменённые исполняемые строки не определены.\n"
     if not total:
         out.append(f"Против `{base}` нет изменённых исполняемых строк production-кода.")
         return "\n".join(out) + "\n"
@@ -153,17 +159,33 @@ def render_diff(results: list[FileResult], base: str, minimum: float | None) -> 
 
 
 def render_totals(covered: int, total: int) -> str:
-    pct = 100.0 * covered / total if total else 100.0
+    if not total:
+        return "### Покрытие проекта\n\nНет данных: 0 исполняемых строк production-кода в профиле покрытия.\n"
+    pct = 100.0 * covered / total
     return f"### Покрытие проекта\n\n**{pct:.1f} %** — {covered} из {total} исполняемых строк production-кода.\n"
 
 
 # --- I/O -----------------------------------------------------------------------------------------------------
 
-def module_path() -> str:
-    m = _MODULE.search((ROOT / "go.mod").read_text())
+def module_path(directory: Path = ROOT) -> str:
+    m = _MODULE.search((directory / "go.mod").read_text())
     if not m:
         sys.exit("go.mod has no module line")
-    return m.group(1)
+    return shlex.split(m.group(1))[0]
+
+
+def load_profiles(inputs: list[tuple[Path, Path]]) -> dict[str, dict[int, bool]]:
+    """Merge module profiles under repository-relative paths without mixing module namespaces."""
+    profile = {}
+    for directory, source in inputs:
+        directory = directory.resolve()
+        prefix = directory.relative_to(ROOT.resolve()).as_posix()
+        for path, lines in parse_profile(source.read_text(), module_path(directory)).items():
+            name = path if prefix == "." else f"{prefix}/{path}"
+            target = profile.setdefault(name, {})
+            for number, covered in lines.items():
+                target[number] = target.get(number, False) or covered
+    return profile
 
 
 def git_diff(base: str) -> str:
@@ -176,7 +198,11 @@ def git_diff(base: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--profile", type=Path, default=PROFILE, help="coverage profile (default: cover.out)")
+    inputs_group = ap.add_mutually_exclusive_group()
+    inputs_group.add_argument("--profile", type=Path, default=PROFILE, help="coverage profile (default: repository cover.out)")
+    inputs_group.add_argument("--module-profile", nargs=2, action="append", metavar=("MODULE_DIR", "PROFILE"),
+                    help="module directory and profile, both relative to cwd; repeat for multiple modules")
+    inputs_group.add_argument("--empty", action="store_true", help="explicit report for a scaffold without a Go module")
     ap.add_argument("--base", help="git ref to diff against, e.g. origin/main; without it, project totals")
     ap.add_argument("--min", type=float, help="exit 1 when changed-line coverage is below this percentage")
     ap.add_argument("--summary", type=Path, help="also append the Markdown to this file")
@@ -184,21 +210,28 @@ def main(argv: list[str] | None = None) -> int:
     if args.min is not None and not args.base:
         ap.error("--min needs --base")
 
-    profile = parse_profile(args.profile.read_text(), module_path())
+    if args.empty and any(ROOT.rglob("go.mod")):
+        ap.error("--empty is only for a scaffold without a Go module")
+    inputs = [(Path(directory), Path(source)) for directory, source in args.module_profile] if args.module_profile else [(ROOT, args.profile)]
+    try:
+        profile = {} if args.empty else load_profiles(inputs)
+    except (ValueError, OSError) as error:
+        ap.error(str(error))
+    project_covered, project_total = totals(profile)
+    text = render_totals(project_covered, project_total)
     if args.base:
         results = measure(changed_lines(git_diff(args.base)), profile)
-        text = render_diff(results, args.base, args.min)
-        covered, total = sum(r.covered for r in results), sum(r.total for r in results)
-    else:
-        covered, total = totals(profile)
-        text = render_totals(covered, total)
+        text += "\n" + render_diff(results, args.base, args.min, available=project_total > 0)
 
     sys.stdout.write(text)
     if args.summary:
         with args.summary.open("a") as f:
             f.write(text + "\n")
-    if args.min is not None and total and 100.0 * covered / total < args.min:
-        return 1
+    if args.min is not None:
+        # --min requires --base: the target uses changed lines only, never project totals.
+        covered, total = sum(r.covered for r in results), sum(r.total for r in results)
+        if not project_total or (total and 100.0 * covered / total < args.min):
+            return 1
     return 0
 
 
