@@ -146,7 +146,7 @@ class DigestRecoveryTests(unittest.TestCase):
         from renovate_policy import recovery_rules
         rule=recovery_rules([{'depName':'postgres','datasource':'docker','newValue':'18','newDigest':'sha256:bad'}],42)[0]
         self.assertEqual(rule['matchNewValue'],'/^18$/')
-        self.assertNotIn('matchJsonata',rule)
+        self.assertEqual(rule['matchJsonata'],['$exists(newDigest) and newDigest != null'])
         self.assertEqual(rule['recreateWhen'],'always')
 
 class CurrentRunAdapterTests(unittest.TestCase):
@@ -315,6 +315,30 @@ class NativeStatusBoundaryTests(unittest.TestCase):
         self.assertFalse(api.protection('main',['go']))
         api.rule=copy.deepcopy(valid);api.rule['required_status_checks']['contexts']=[]
         self.assertFalse(api.protection('main',['go']))
+
+
+class ComposeTargetBaselineBoundaryTests(unittest.TestCase):
+    def test_different_selected_release_stack_cannot_replace_generated_baseline(self):
+        from renovate_policy_data import COMPOSE_PACKAGES
+        api=GitHub('credential','fin-assist/android');writes=[]
+        target={'packageRules':[{'groupName':'androidx compose stack','separateMajorMinor':False,'matchPackageNames':COMPOSE_PACKAGES+['androidx.navigation3:**']}]}
+        def get(path):
+            if path.startswith('branches/'):return {'commit':{'sha':'release-sha'}}
+            if path=='contents/renovate-base.json?ref=release-sha':return {'content':base64.b64encode(json.dumps(target).encode()).decode()}
+            raise AssertionError('Baseline mismatch must fail before reading/writing generated preset')
+        api.get=get;api.request=lambda *args:writes.append(args)
+        with self.assertRaisesRegex(ValueError,'coordinate code/preset migration'):api.sync_baseline('release/1.0.0')
+        self.assertEqual(writes,[])
+    def test_saved_old_stack_shape_requires_explicit_owner_migration(self):
+        from unittest.mock import patch
+        from renovate_policy import compose_stack_rule
+        import renovate_policy_data
+        rule=compose_stack_rule(123)
+        api=GitHub('credential','fin-assist/android')
+        saved={'baseBranchPatterns':['main'],'packageRules':[rule]}
+        api.get=lambda path:{'sha':'saved-sha','content':base64.b64encode(json.dumps(saved).encode()).decode()}
+        with patch.object(renovate_policy_data,'COMPOSE_PACKAGES',renovate_policy_data.COMPOSE_PACKAGES+['androidx.navigation3:**']):
+            with self.assertRaises(ValueError):api.read_policy()
 
 if __name__ == '__main__':
     unittest.main()

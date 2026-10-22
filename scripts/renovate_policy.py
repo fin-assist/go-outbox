@@ -10,7 +10,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from renovate_policy_data import COMPOSE_PACKAGES
+from renovate_policy_data import COMPOSE_PACKAGES, NO_DIGEST, HAS_DIGEST
 
 BOT_ID = 29139614
 BOT = 'renovate[bot]'
@@ -113,6 +113,7 @@ def quarantine_rules(items, generation):
             rule['matchJsonata'] = ['newDigest = ' + json.dumps(item['newDigest'])]
         else:
             rule['matchNewValue'] = '/^' + re.escape(item['newValue']) + '$/'
+            rule['matchJsonata'] = [NO_DIGEST]
         rules.append(rule)
     return rules
 
@@ -132,6 +133,7 @@ def recovery_rules(items, generation):
         if type(major) is not int and item.get('newDigest') and item.get('newValue'):
             # Digest lookup has no newMajor: a numeric tag is still a tag.
             rule['matchNewValue'] = '/^' + re.escape(item['newValue']) + '$/'
+            rule['matchJsonata'] = [HAS_DIGEST]
             rules.append(rule)
             continue
         if type(major) is not int:
@@ -224,7 +226,12 @@ class GitHub:
         branch = self.get('branches/' + urllib.parse.quote(base, safe=''))
         source = self.get('contents/renovate-base.json?ref=' + branch['commit']['sha'])
         baseline = base64.b64decode(source['content'])
-        json.loads(baseline)  # Refuse an invalid source without replacing the preset.
+        value = json.loads(baseline)  # Never execute target JSON.
+        if self.repo == 'fin-assist/android':
+            stack = [rule for rule in value.get('packageRules', []) if rule.get('groupName') == 'androidx compose stack']
+            if (len(stack) != 1 or stack[0].get('matchPackageNames') != COMPOSE_PACKAGES
+                    or stack[0].get('separateMajorMinor') is not False):
+                raise ValueError('Target Compose baseline differs from trusted controller; owner must coordinate code/preset migration before sync')
         current = self.get('contents/base.json?ref=' + POLICY_BRANCH)
         if baseline != base64.b64decode(current['content']):
             self.request('PUT', 'contents/base.json', {
@@ -626,7 +633,7 @@ def reconcile_pr(api, config, base, candidate, trigger):
             raise ValueError('Claimed retry has not advanced; owner inspection required')
     if decision['action'] == 'retry' and api.fresh(number, sha, base, runs):
         # Claim before calling rerun: event redelivery never spends a second retry.
-        body = MARKER + json.dumps(decision['state']) + ' -->\nОдин автоматический повтор упавших проверок CI для SHA `' + sha + '`.'
+        body = MARKER + json.dumps(decision['state']) + ' -->\nОдин автоматический повтор упавших проверок CI для SHA `' + sha + '`. Cancelled/skipped/timed_out и дополнительные ручные attempts оставляют PR владельцу без автоматического закрытия; проверьте Actions перед ручным повтором.'
         # Protected state is authority. Comments are editable/deletable UX only.
         receipts[receipt_key] = {'state': decision['state']}
         receipt_sha = api.write_receipts(receipts, receipt_sha)
@@ -661,7 +668,7 @@ def reconcile_pr(api, config, base, candidate, trigger):
         rules = policy.setdefault('packageRules', [])
         for rule in recovery + new_rules:
             def identity(value):
-                return tuple(value.get(key) for key in ('matchPackageNames', 'matchDatasources', 'matchNewValue', 'matchJsonata'))
+                return tuple(value.get(key) for key in ('description', 'matchPackageNames', 'matchDatasources', 'matchNewValue', 'matchJsonata'))
             def generation(value):
                 match = re.fullmatch(r'fin211-retry-([0-9]+)-', value.get('additionalBranchPrefix', ''))
                 return int(match[1]) if match else 0

@@ -4,3 +4,6 @@ comment.md
 gorelease.txt
 notes.md
 __pycache__/
+
+# Local Renovate runtime dependencies
+node_modules/

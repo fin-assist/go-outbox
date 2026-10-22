@@ -6,6 +6,7 @@ import unittest
 from renovate_policy import GitHub, UPDATES, reconcile, MARKER
 
 class Fake(GitHub):
+    """Retain the old run after dispatch to model an eventually consistent read."""
     def __init__(self):
         super().__init__('', 'fin-assist/x')
         self.target='main'; self.actions=[]; self.comments=[]; self.receipts={}
@@ -670,6 +671,50 @@ class LateQuarantineGenerationTests(unittest.TestCase):
         old.pr['state']='open';old.policy=policy;reconcile(old,old.config)
         self.assertEqual(old.pr['state'],'closed')
         self.assertEqual([r['additionalBranchPrefix'] for r in old.policy['packageRules'] if 'additionalBranchPrefix' in r],['fin211-retry-2-'])
+
+
+class QueuedRetryEvidenceTests(unittest.TestCase):
+    def test_acknowledged_retry_queue_and_running_snapshots_wait_without_alarm(self):
+        for final in ('success','failure'):
+            api=Fake();api.run['conclusion']='failure';api.jobs[0]['conclusion']='failure'
+            request=api.request
+            def queued(method,path,data=None):
+                result=request(method,path,data)
+                if path.endswith('rerun-failed-jobs'):
+                    api.run.update(run_attempt=2,status='queued',conclusion=None)
+                return result
+            api.request=queued;reconcile(api,api.config)
+            before=copy.deepcopy(api.actions);comment=api.comments[0]['body']
+            reconcile(api,api.config)
+            api.run.update(status='in_progress');reconcile(api,api.config)
+            self.assertEqual(api.actions,before);self.assertEqual(api.comments[0]['body'],comment)
+            api.run.update(status='completed',conclusion=final);api.jobs[0]['conclusion']=final
+            reconcile(api,api.config)
+            self.assertEqual(sum(path.endswith('rerun-failed-jobs') for path,_ in api.actions),1)
+            if final=='success':self.assertTrue(any(path=='pulls/1/merge' for path,_ in api.actions))
+            else:self.assertEqual(api.pr['state'],'closed')
+
+
+class NormalAndDigestPolicyTests(unittest.TestCase):
+    def test_normal_tag_and_digest_of_same_tag_keep_disjoint_recovery_and_quarantine(self):
+        from renovate_policy_data import validate_policy,NO_DIGEST,HAS_DIGEST,RECOVERY_DESCRIPTION,QUARANTINE_DESCRIPTION
+        policy={'baseBranchPatterns':['main']}
+        items=[(40,{'depName':'postgres','datasource':'docker','newValue':'18','newMajor':18}),
+               (55,{'depName':'postgres','datasource':'docker','newValue':'18','newDigest':'sha256:bad'})]
+        for number,item in items:
+            api=Fake();api.pr['number']=number;api.policy=policy
+            api.message=UPDATES+base64.b64encode(json.dumps([item]).encode()).decode()+' -->'
+            api.run['conclusion']='failure';api.jobs[0]['conclusion']='failure'
+            reconcile(api,api.config);api.run['run_attempt']=2;reconcile(api,api.config)
+            policy=api.policy
+        validate_policy(policy)
+        self.assertEqual(len(policy['packageRules']),4)
+        recoveries=[r for r in policy['packageRules'] if r['description']==RECOVERY_DESCRIPTION]
+        quarantines=[r for r in policy['packageRules'] if r['description']==QUARANTINE_DESCRIPTION]
+        self.assertEqual(len(recoveries),2);self.assertEqual(len(quarantines),2)
+        self.assertTrue(any(r.get('matchJsonata')==[HAS_DIGEST] for r in recoveries))
+        self.assertTrue(any(r.get('matchJsonata')==[NO_DIGEST] for r in quarantines))
+        self.assertTrue(all(r['description']==RECOVERY_DESCRIPTION for r in policy['packageRules'][:2]))
 
 if __name__ == '__main__':
     unittest.main()

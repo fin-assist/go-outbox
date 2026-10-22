@@ -1,6 +1,6 @@
 /**
  * Optional contract test against the real, pinned Renovate package (Node 24).
- * Install renovate@44.176.2 with --ignore-scripts in a temporary npm prefix, then:
+ * Install the versioned fixture lock with npm ci --ignore-scripts, then:
  * RENOVATE_RUNTIME=/path/to/prefix node --experimental-test-module-mocks scripts/test_renovate_runtime.mjs
  * The runner must impose a process timeout. No network or repository mutations occur.
  */
@@ -13,7 +13,9 @@ import { execFileSync } from 'node:child_process';
 
 assert.ok(process.env.RENOVATE_RUNTIME, 'Set RENOVATE_RUNTIME to the temporary npm prefix');
 const pkg = realpathSync(resolve(process.env.RENOVATE_RUNTIME, 'node_modules/renovate'));
-assert.equal(JSON.parse(readFileSync(resolve(pkg, 'package.json'))).version, '44.176.2');
+const pinnedVersion=JSON.parse(readFileSync(new URL('./renovate-runtime/package.json',import.meta.url))).dependencies.renovate;
+assert.match(pinnedVersion,/^[0-9]+\.[0-9]+\.[0-9]+$/);
+assert.equal(JSON.parse(readFileSync(resolve(pkg,'package.json'))).version,pinnedVersion);
 const mod = (path) => pathToFileURL(resolve(pkg, 'dist', path)).href;
 
 // Preserve the actual approval/cache gates. External rate counters and the
@@ -353,3 +355,26 @@ for (const [failedValue,futureValue] of [
   }
 }
 console.log('PASS: exact-value matchers quarantine only 1.2.3-beta, v2.0.0+incompatible and ~1.2.3');
+
+// An ordinary failed tag must not suppress later fixed digests after a manual base update.
+const normalTag=[{depName:'postgres',datasource:'docker',newValue:'18',newMajor:18}];
+const failedTagDigest=[{depName:'postgres',datasource:'docker',newValue:'18',newDigest:'sha256:bad'}];
+const disjointTagRules=[
+  ...productionRules('recovery_rules',normalTag,40),
+  ...productionRules('recovery_rules',failedTagDigest,55),
+  ...productionRules('quarantine_rules',normalTag,40),
+  ...productionRules('quarantine_rules',failedTagDigest,55),
+];
+for(const [extra,approval,recreate] of [
+  [{newMajor:18,updateType:'major'},true,'never'],
+  [{newMajor:18,updateType:'major',newDigest:null},true,'never'],
+  [{newDigest:'sha256:bad',updateType:'digest'},true,'never'],
+  [{newDigest:'sha256:fixed',updateType:'digest'},false,'always'],
+  [{newDigest:'sha256:fixed',updateType:'pinDigest'},false,'always'],
+]){
+  const matched=await applyPackageRules({packageName:'postgres',depName:'postgres',datasource:'docker',
+    newValue:'18',...extra,packageRules:disjointTagRules},'normal-digest-collision');
+  assert.equal(matched.dependencyDashboardApproval===true,approval);
+  assert.equal(matched.recreateWhen,recreate);
+}
+console.log('PASS: failed ordinary tag and failed digest keep disjoint gates; fixed digest/pinDigest escape approval');

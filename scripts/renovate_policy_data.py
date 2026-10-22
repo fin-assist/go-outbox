@@ -4,6 +4,8 @@ import re
 
 RECOVERY_DESCRIPTION = 'FIN-211: recovery of an automatically failed dependency family'
 QUARANTINE_DESCRIPTION = 'FIN-211: failed twice; retry explicitly in Dependency Dashboard'
+NO_DIGEST = '$not($exists(newDigest)) or newDigest = null'
+HAS_DIGEST = '$exists(newDigest) and newDigest != null'
 COMMON_KEYS = {'description', 'matchPackageNames', 'matchDatasources', 'recreateWhen'}
 QUARANTINE_KEYS = COMMON_KEYS | {'dependencyDashboardApproval', 'groupName', 'additionalBranchPrefix'}
 
@@ -109,7 +111,9 @@ def validate_policy(value):
             _reject(f'rule {index} description is not generated')
         if 'matchNewValue' in rule:
             keys = keys | {'matchNewValue'}
-            matcher_valid = _exact_value_regex(rule['matchNewValue'])
+            guard = HAS_DIGEST if description == RECOVERY_DESCRIPTION else NO_DIGEST
+            keys = keys | {'matchJsonata'}
+            matcher_valid = _exact_value_regex(rule['matchNewValue']) and rule.get('matchJsonata') == [guard]
         else:
             keys = keys | {'matchJsonata'}
         if set(rule) != keys or not matcher_valid:

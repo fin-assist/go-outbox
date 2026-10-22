@@ -4,7 +4,7 @@ import json
 import re
 import unittest
 
-from renovate_policy_data import (RECOVERY_DESCRIPTION, QUARANTINE_DESCRIPTION, COMPOSE_DESCRIPTION, COMPOSE_PACKAGES, validate_policy)
+from renovate_policy_data import (RECOVERY_DESCRIPTION, QUARANTINE_DESCRIPTION, COMPOSE_DESCRIPTION, COMPOSE_PACKAGES, NO_DIGEST, HAS_DIGEST, validate_policy)
 
 
 def recovery(**changes):
@@ -15,7 +15,7 @@ def recovery(**changes):
 def quarantine():
     return dict(description=QUARANTINE_DESCRIPTION, matchPackageNames=['@scope/package'],
                 matchDatasources=['npm'], recreateWhen='never', dependencyDashboardApproval=True,
-                groupName=None, additionalBranchPrefix='fin211-retry-123-', matchNewValue='/^4\\.0\\.0$/')
+                groupName=None, additionalBranchPrefix='fin211-retry-123-', matchJsonata=[NO_DIGEST], matchNewValue='/^4\\.0\\.0$/')
 
 
 def compose():
@@ -162,8 +162,6 @@ class PolicyDataTests(unittest.TestCase):
         self.reject_rule(rule)
 
 
-if __name__ == '__main__':
-    unittest.main()
 
 class PolicyReadWriteBoundaryTests(unittest.TestCase):
     def test_real_read_and_write_reject_unexpected_native_automerge_before_mutation(self):
@@ -177,3 +175,17 @@ class PolicyReadWriteBoundaryTests(unittest.TestCase):
         with self.assertRaises(ValueError):api.write_policy(api.value,'preset-sha')
         from renovate_policy import compose_stack_rule
         self.assertIs(validate_policy(policy(compose_stack_rule(123)))['packageRules'][0]['automerge'],False)
+
+class DigestScopeSchemaTests(unittest.TestCase):
+    def test_exact_value_rules_accept_only_the_fixed_digest_presence_guard(self):
+        normal=quarantine();validate_policy(policy(normal))
+        for guard in ([HAS_DIGEST],['newDigest = null'],['$exists(newDigest)'],['true']):
+            changed=copy.deepcopy(normal);changed['matchJsonata']=guard
+            with self.assertRaises(ValueError):validate_policy(policy(changed))
+        tag=recovery();tag.pop('matchJsonata');tag['matchNewValue']='/^18$/';tag['matchJsonata']=[HAS_DIGEST]
+        validate_policy(policy(tag))
+        tag['matchJsonata']=[NO_DIGEST]
+        with self.assertRaises(ValueError):validate_policy(policy(tag))
+
+if __name__ == '__main__':
+    unittest.main()

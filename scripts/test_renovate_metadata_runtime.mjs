@@ -8,7 +8,9 @@ import {execFileSync} from 'node:child_process';
 
 assert.ok(process.env.RENOVATE_RUNTIME);
 const pkg=realpathSync(resolve(process.env.RENOVATE_RUNTIME,'node_modules/renovate'));
-assert.equal(JSON.parse(readFileSync(resolve(pkg,'package.json'))).version,'44.176.2');
+const pinnedVersion=JSON.parse(readFileSync(new URL('./renovate-runtime/package.json',import.meta.url))).dependencies.renovate;
+assert.match(pinnedVersion,/^[0-9]+\.[0-9]+\.[0-9]+$/);
+assert.equal(JSON.parse(readFileSync(resolve(pkg,'package.json'))).version,pinnedVersion);
 const mod=path=>pathToFileURL(resolve(pkg,'dist',path)).href;
 const artifacts=()=>({updatedArtifacts:[],artifactErrors:[]});
 mock.module(mod('workers/global/limits.js'),{namedExports:{calcLimit:()=>0,counts:{},getCount:()=>0,
