@@ -300,12 +300,28 @@ class GitHub:
     def signed_commits(self, number):
         commits = self.pages(f'pulls/{number}/commits')
         for commit in commits:
-            query = {"query": "query($owner:String!,$name:String!,$sha:String!){repository(owner:$owner,name:$name){object(oid:$sha){... on Commit{signature{isValid signer{login}}}}}}", "variables": dict(zip(('owner','name'), self.repo.split('/')), sha=commit['sha'])}
+            query = {"query": "query($owner:String!,$name:String!,$sha:GitObjectID!){repository(owner:$owner,name:$name){object(oid:$sha){... on Commit{signature{isValid signer{login}}}}}}", "variables": dict(zip(('owner','name'), self.repo.split('/')), sha=commit['sha'])}
             req = urllib.request.Request('https://api.github.com/graphql', method='POST',
                     data=json.dumps(query).encode(), headers={'Authorization':'Bearer '+self.token, 'Content-Type':'application/json'})
             with urllib.request.urlopen(req, timeout=30) as response:
                 data = json.load(response)
-            signature = (((data.get('data') or {}).get('repository') or {}).get('object') or {}).get('signature') or {}
+            if not isinstance(data, dict) or data.get('errors'):
+                raise ValueError('GitHub signature query failed; owner inspection required')
+            result = data.get('data')
+            repository = result.get('repository') if isinstance(result, dict) else None
+            obj = repository.get('object') if isinstance(repository, dict) else None
+            if not isinstance(obj, dict) or 'signature' not in obj:
+                raise ValueError('GitHub signature query returned missing or invalid data')
+            signature = obj['signature']
+            if signature is not None:
+                if (not isinstance(signature, dict) or type(signature.get('isValid')) is not bool
+                        or 'signer' not in signature
+                        or (signature['signer'] is not None
+                            and (not isinstance(signature['signer'], dict)
+                                 or not isinstance(signature['signer'].get('login'), str)
+                                 or not signature['signer']['login']))):
+                    raise ValueError('GitHub signature query returned missing or invalid data')
+            signature = signature or {}
             committer = (commit.get('committer') or {}).get('login')
             signer = (signature.get('signer') or {}).get('login')
             commit['_trusted_signer'] = signature.get('isValid') is True and signer == committer and signer in ('web-flow', BOT)
