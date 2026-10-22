@@ -70,8 +70,6 @@ class PolicyTests(unittest.TestCase):
             def get(self,path): return {'behind_by': 0}
         self.assertEqual(Fake('','x').base(),'main')
 
-if __name__ == '__main__': unittest.main()
-
 class NativeEvidenceTests(unittest.TestCase):
     def test_exact_pr_attempt_beats_push_skipped_and_extra_required_still_blocks(self):
         class Fake(GitHub):
@@ -257,3 +255,37 @@ class TargetOwnerProtectionTests(unittest.TestCase):
             api.rule=copy.deepcopy(rule);mutate(api.rule);self.assertFalse(api.protection('main',['go']))
         api.rule=copy.deepcopy(rule);api.rule['block_creations']['enabled']=False
         self.assertTrue(api.protection('main',['go']));self.assertFalse(api.protection('release/1.0.0',['go']))
+
+
+class RootRepositoryRequestTests(unittest.TestCase):
+    def test_merge_settings_root_has_no_trailing_slash(self):
+        import io,json
+        from unittest.mock import patch
+        api=GitHub('credential','owner/repo');seen=[]
+        def urlopen(request,timeout):
+            seen.append(request.full_url)
+            return io.BytesIO(json.dumps({'allow_merge_commit':True}).encode())
+        with patch('urllib.request.urlopen',urlopen):self.assertEqual(api.merge_method(),'merge')
+        self.assertEqual(seen,['https://api.github.com/repos/owner/repo'])
+
+class ReleaseQueryAdapterTests(unittest.TestCase):
+    def test_no_release_does_not_fetch_any_pr_history(self):
+        api=GitHub('credential','owner/repo');paths=[]
+        def pages(path,key=None):
+            paths.append(path)
+            if path=='branches':return [{'name':'main'},{'name':'feature/x'}]
+            raise AssertionError('Unexpected full PR history fetch')
+        api.pages=pages
+        self.assertEqual(api.base(),'main');self.assertEqual(paths,['branches'])
+    def test_latest_active_release_queries_only_its_same_repo_head(self):
+        api=GitHub('credential','owner/repo');paths=[]
+        def pages(path,key=None):
+            paths.append(path)
+            if path=='branches':return [{'name':'release/1.0.0'},{'name':'release/2.0.0'}]
+            return [{'merged_at':'today','head':{'ref':'release/2.0.0','repo':{'full_name':'fork/repo'}}}]
+        api.pages=pages
+        self.assertEqual(api.base(),'release/2.0.0')
+        self.assertEqual(paths,['branches','pulls?state=closed&base=main&head=owner%3Arelease%2F2.0.0'])
+
+if __name__ == '__main__':
+    unittest.main()

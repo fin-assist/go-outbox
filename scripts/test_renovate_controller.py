@@ -75,7 +75,7 @@ class ControllerTests(unittest.TestCase):
         reconcile(api,api.config)
         self.assertEqual(len(api.comments),1)
         self.assertEqual(sum(p=='actions/runs/1/rerun-failed-jobs' for p,_ in api.actions),1)
-        reconcile(api,api.config)
+        with self.assertRaises(ValueError):reconcile(api,api.config)
         self.assertEqual(sum(p=='actions/runs/1/rerun-failed-jobs' for p,_ in api.actions),1)
         api.run['run_attempt']=2;reconcile(api,api.config)
         self.assertEqual(api.pr['state'],'closed');self.assertEqual(len(api.comments),1)
@@ -107,7 +107,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(len(api.comments),1)
         self.assertIn('Re-run failed jobs',api.comments[0]['body'])
         self.assertIn('run_id',api.comments[0]['body'])
-        reconcile(api,api.config)
+        with self.assertRaises(ValueError):reconcile(api,api.config)
         self.assertEqual(len(api.comments),1)
 
     def test_close_api_error_does_not_claim_pr_was_closed(self):
@@ -177,7 +177,7 @@ class MultiWorkflowControllerTests(unittest.TestCase):
         state = json.loads(api.comments[0]['body'].split(MARKER)[1].split(' -->')[0])
         self.assertFalse(state['runs']['ci.yml']['retried'])
         self.assertTrue(state['runs']['renovate-policy-tests.yml']['retried'])
-        reconcile(api, api.config)
+        with self.assertRaises(ValueError):reconcile(api, api.config)
         self.assertEqual(len(api.reruns()), 1)
         api.outcome('renovate-policy-tests.yml', 'failure', attempt=2)
         reconcile(api, api.config)
@@ -240,8 +240,9 @@ class MultiWorkflowControllerTests(unittest.TestCase):
             reconcile(api, api.config)
             change(api)
             before = copy.deepcopy(api.actions)
-            reconcile(api, api.config)
-            self.assertEqual(api.actions, before)
+            try:reconcile(api, api.config)
+            except ValueError:pass
+            self.assertEqual([x for x in api.actions if not x[0].startswith('issues/')], [x for x in before if not x[0].startswith('issues/')])
 
     def test_freshness_rereads_policy_workflow_before_mutation(self):
         for conclusion in ['success', 'failure']:
@@ -324,8 +325,6 @@ class MultiWorkflowControllerTests(unittest.TestCase):
         reconcile(api, api.config)
         self.assertEqual(api.reruns(), ['actions/runs/1/rerun-failed-jobs'])
 
-
-if __name__=='__main__':unittest.main()
 
 class SignedCommitsAdapterTests(unittest.TestCase):
     def test_actual_graphql_signatures_allow_only_trusted_signer_and_committer(self):
@@ -533,7 +532,7 @@ class ProtectedReceiptTests(unittest.TestCase):
             original=copy.deepcopy(api.receipts)
             if delete:api.comments.clear()
             else:api.comments[0]['body']=MARKER+json.dumps({'sha':'forged','runs':{}})+' -->'
-            reconcile(api,api.config)
+            with self.assertRaises(ValueError):reconcile(api,api.config)
             self.assertEqual(api.receipts,original)
             self.assertEqual(sum(path.endswith('rerun-failed-jobs') for path,_ in api.actions),1)
             api.run['run_attempt']=2;reconcile(api,api.config)
@@ -554,7 +553,8 @@ class ProtectedReceiptTests(unittest.TestCase):
     def test_return_to_old_head_does_not_restore_budget(self):
         api=self.red();reconcile(api,api.config)
         api.pr['head']['sha']='def';api.run['head_sha']='def';reconcile(api,api.config)
-        api.pr['head']['sha']='abc';api.run['head_sha']='abc';reconcile(api,api.config)
+        api.pr['head']['sha']='abc';api.run['head_sha']='abc'
+        with self.assertRaises(ValueError):reconcile(api,api.config)
         self.assertEqual(sum(path.endswith('rerun-failed-jobs') for path,_ in api.actions),2)
         self.assertEqual(set(api.receipts),{'1:abc','1:def'})
 
@@ -623,3 +623,53 @@ class ReplacementAcknowledgementTests(unittest.TestCase):
         self.assertEqual([c['id'] for c in api.comments],[20])
         self.assertEqual(api.receipts['1:abc']['comment_id'],20)
         self.assertEqual(api.pr['state'],'closed')
+
+
+class InterruptedDispatchTests(unittest.TestCase):
+    def red(self):
+        api=Fake();api.run['conclusion']='failure';api.jobs[0]['conclusion']='failure';return api
+    def test_failed_claim_post_has_persistent_error_and_repaired_owner_notice_without_rerun(self):
+        import urllib.error
+        api=self.red();request=api.request
+        def failed(method,path,data=None):
+            if path=='issues/1/comments':raise urllib.error.URLError('POST failed')
+            return request(method,path,data)
+        api.request=failed
+        with self.assertRaises(ValueError):reconcile(api,api.config)
+        self.assertEqual(api.comments,[]);self.assertTrue(api.receipts)
+        api.request=request
+        for _ in range(2):
+            with self.assertRaises(ValueError):reconcile(api,api.config)
+        self.assertEqual(len(api.comments),1)
+        self.assertIn('dispatch неизвестен',api.comments[0]['body'])
+        self.assertFalse(any(path.endswith('rerun-failed-jobs') for path,_ in api.actions))
+    def test_failed_comment_ack_repairs_existing_claim_and_keeps_budget_spent(self):
+        api=self.red();write=api.write_receipts;calls=[]
+        def write_once(data,sha):
+            calls.append(1)
+            if len(calls)==2:raise ValueError('CAS failed after POST')
+            return write(data,sha)
+        api.write_receipts=write_once
+        with self.assertRaises(ValueError):reconcile(api,api.config)
+        self.assertEqual(len(api.comments),1)
+        with self.assertRaises(ValueError):reconcile(api,api.config)
+        self.assertEqual(len(api.comments),1)
+        self.assertIn('dispatch неизвестен',api.comments[0]['body'])
+        self.assertFalse(any(path.endswith('rerun-failed-jobs') for path,_ in api.actions))
+
+
+class LateQuarantineGenerationTests(unittest.TestCase):
+    def test_reopened_old_pr_cannot_rollback_newer_generation(self):
+        policy={'baseBranchPatterns':['main']};old=None
+        for number in (1,2):
+            api=Fake();api.pr['number']=number;api.policy=policy
+            api.run['conclusion']='failure';api.jobs[0]['conclusion']='failure'
+            reconcile(api,api.config);api.run['run_attempt']=2;reconcile(api,api.config)
+            policy=api.policy
+            if number==1:old=api
+        old.pr['state']='open';old.policy=policy;reconcile(old,old.config)
+        self.assertEqual(old.pr['state'],'closed')
+        self.assertEqual([r['additionalBranchPrefix'] for r in old.policy['packageRules'] if 'additionalBranchPrefix' in r],['fin211-retry-2-'])
+
+if __name__ == '__main__':
+    unittest.main()

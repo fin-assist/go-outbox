@@ -10,6 +10,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from renovate_policy_data import COMPOSE_PACKAGES
 
 BOT_ID = 29139614
 BOT = 'renovate[bot]'
@@ -29,7 +30,7 @@ def selected_base(branches, merged, ancestor):
         if match:
             versions.append((tuple(map(int, match.groups())), name))
     for _, name in sorted(versions, reverse=True):
-        if not (name in merged and ancestor(name)):
+        if not ((merged(name) if callable(merged) else name in merged) and ancestor(name)):
             return name
     return 'main'
 
@@ -69,12 +70,6 @@ def updates(body):
     return result
 
 
-COMPOSE_STACK_PACKAGES = [
-    'androidx.compose:compose-bom', 'androidx.activity:**', 'androidx.core:**',
-    'androidx.fragment:**', 'androidx.hilt:hilt-navigation-compose',
-    'androidx.lifecycle:**', 'androidx.navigation:**',
-]
-
 
 def compose_package(name):
     return name.startswith(('androidx.', 'org.jetbrains.compose',
@@ -87,13 +82,13 @@ def compose_update(items):
 
 
 def compose_stack_member(item):
-    return any(fnmatch.fnmatchcase(item['depName'], pattern) for pattern in COMPOSE_STACK_PACKAGES)
+    return any(fnmatch.fnmatchcase(item['depName'], pattern) for pattern in COMPOSE_PACKAGES)
 
 
 def compose_stack_rule(generation):
     return {
         'description': 'FIN-211: failed Compose stack requires grouped Dashboard approval',
-        'matchPackageNames': COMPOSE_STACK_PACKAGES,
+        'matchPackageNames': COMPOSE_PACKAGES,
         'groupName': 'androidx compose stack', 'separateMajorMinor': False,
         'dependencyDashboardApproval': True, 'recreateWhen': 'never',
         'additionalBranchPrefix': f'fin211-retry-{generation}-', 'automerge': False,
@@ -185,7 +180,7 @@ class GitHub:
         self.controller_login = None
 
     def request(self, method, path, data=None):
-        url = 'https://api.github.com' + path if path.startswith('/') else 'https://api.github.com/repos/' + self.repo + '/' + path
+        url = 'https://api.github.com' + path if path.startswith('/') else 'https://api.github.com/repos/' + self.repo + ('/' + path if path else '')
         token = self.read_token if method == 'GET' and '/check-runs' in path else self.token
         if not token:
             raise ValueError('Read-only checks token is required')
@@ -212,7 +207,11 @@ class GitHub:
 
     def base(self):
         branches = [x['name'] for x in self.pages('branches')]
-        merged = {x['head']['ref'] for x in self.pages('pulls?state=closed&base=main') if x.get('merged_at') and (x['head'].get('repo') or {}).get('full_name') == self.repo}
+        def merged(branch):
+            head = urllib.parse.quote(self.repo.split('/')[0] + ':' + branch, safe='')
+            return any(item.get('merged_at') and item['head']['ref'] == branch
+                       and (item['head'].get('repo') or {}).get('full_name') == self.repo
+                       for item in self.pages('pulls?state=closed&base=main&head=' + head))
         def ancestor(branch):
             # compare(base=release, head=main) behind/ahead semantics: release ancestor
             # iff there are zero commits exclusive to release (behind_by == 0).
@@ -496,6 +495,27 @@ def validate_receipts(data):
             raise ValueError('Invalid protected comment identity')
 
 
+def explain_spent_retry(api, config, number, key, receipt, body):
+    """Repair an informational PR notice; comments never change retry authority."""
+    comments = api.pages(f'issues/{number}/comments')
+    comment = next((item for item in comments if item.get('id') == receipt.get('comment_id')), None)
+    if comment is not None:
+        if comment.get('body') != body:
+            api.request('PATCH', f"issues/comments/{comment['id']}", {'body': body})
+        return
+    comment = next((item for item in comments if (item.get('user') or {}).get('login') == config['controllerLogin']
+                    and item.get('body', '').startswith(body.split(' -->', 1)[0] + ' -->')), None)
+    if comment is None:
+        comment = api.request('POST', f'issues/{number}/comments', {'body': body})
+    elif comment.get('body') != body:
+        api.request('PATCH', f"issues/comments/{comment['id']}", {'body': body})
+    latest, latest_sha = api.read_receipts()
+    if latest.get(key, {}).get('state') != receipt['state']:
+        raise ValueError('Protected retry receipt changed during owner notice repair')
+    latest[key]['comment_id'] = comment['id']
+    api.write_receipts(latest, latest_sha)
+
+
 def reconcile(api, config, trigger=None, mutate_prs=True):
     if api.identity() != config['controllerLogin']:
         raise ValueError('Mutation credential identity differs from controllerLogin; no retry claim is allowed')
@@ -591,6 +611,19 @@ def reconcile_pr(api, config, base, candidate, trigger):
             api.request('PUT', f'pulls/{number}/merge', {'sha': sha, 'merge_method': merge_method})
         return
     decision = retry_decision(verdicts, state, sha)
+    if decision['action'] == 'wait' and state is not None and state.get('sha') == sha:
+        # A persisted budget must not turn a failed/unknown dispatch into a
+        # permanently green no-op. Never reset it or spend a second retry.
+        claims = state.get('runs', {})
+        if isinstance(claims, dict) and any(isinstance(claims.get(name), dict) and claims[name].get('retried') is True
+               and claims[name].get('run_id') == run['id']
+               and claims[name].get('attempt') == run['run_attempt']
+               and run['status'] == 'completed' and run['conclusion'] == 'failure'
+               for name, run in verdicts.items()):
+            print(f'PR {number}: claimed retry has not advanced; owner must inspect Actions; budget retained')
+            body = MARKER + json.dumps(state) + ' -->\nАвтоматический retry ещё не подтверждён новым attempt; dispatch неизвестен или не отправлен. Бюджет сохранён. Владелец: проверьте Actions и при необходимости вручную выберите Re-run failed jobs. Автоматический второй retry запрещён.'
+            explain_spent_retry(api, config, number, receipt_key, receipt, body)
+            raise ValueError('Claimed retry has not advanced; owner inspection required')
     if decision['action'] == 'retry' and api.fresh(number, sha, base, runs):
         # Claim before calling rerun: event redelivery never spends a second retry.
         body = MARKER + json.dumps(decision['state']) + ' -->\nОдин автоматический повтор упавших проверок CI для SHA `' + sha + '`.'
@@ -627,7 +660,16 @@ def reconcile_pr(api, config, base, candidate, trigger):
         policy, policy_sha = api.read_policy()
         rules = policy.setdefault('packageRules', [])
         for rule in recovery + new_rules:
-            rules[:] = [old for old in rules if (old.get('matchPackageNames'),old.get('matchDatasources'),old.get('matchNewValue'),old.get('matchJsonata')) != (rule['matchPackageNames'],rule.get('matchDatasources'),rule.get('matchNewValue'),rule.get('matchJsonata'))]
+            def identity(value):
+                return tuple(value.get(key) for key in ('matchPackageNames', 'matchDatasources', 'matchNewValue', 'matchJsonata'))
+            def generation(value):
+                match = re.fullmatch(r'fin211-retry-([0-9]+)-', value.get('additionalBranchPrefix', ''))
+                return int(match[1]) if match else 0
+            matching = [old for old in rules if identity(old) == identity(rule)]
+            # Reopened/late old PRs must never restore an already consumed prefix.
+            if any(generation(old) > generation(rule) for old in matching):
+                continue
+            rules[:] = [old for old in rules if identity(old) != identity(rule)]
             rules.append(rule)
         # Exact failed values override family recreation.
         rules.sort(key=lambda rule: rule.get('description') != 'FIN-211: recovery of an automatically failed dependency family')

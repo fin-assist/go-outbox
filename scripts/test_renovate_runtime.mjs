@@ -28,6 +28,8 @@ mock.module(mod('workers/repository/update/branch/handle-existing.js'), { namedE
 } });
 const { init } = await import(mod('logger/index.js'));
 await init();
+const {regexEngineStatus}=await import(mod('util/regex.js'));
+console.log(`Renovate regex engine: ${regexEngineStatus.type==='available'?'native RE2':'JavaScript RegExp fallback'} (${regexEngineStatus.type})`);
 const { getConfig } = await import(mod('config/defaults.js'));
 const { branchifyUpgrades } = await import(mod('workers/repository/updates/branchify.js'));
 const { processBranch } = await import(mod('workers/repository/update/branch/index.js'));
@@ -336,3 +338,18 @@ assert.equal(unaffectedSortsFirst.recreateClosed,true);
 assert.equal(unaffectedSortsFirst.dependencyDashboardApproval,false);
 assert.equal((await gate(unaffectedSortsFirst)).result,passed);
 console.log('PASS: unaffected dependency sorts before recovered member without blocking the group');
+
+// Python's escaped punctuation must stay exact in the actual active matcher engine.
+for (const [failedValue,futureValue] of [
+  ['1.2.3-beta','1.2.3-beta.1'],
+  ['v2.0.0+incompatible','v2.0.1+incompatible'],
+  ['~1.2.3','~1.2.4'],
+]) {
+  const rules=productionRules('quarantine_rules',[{depName:'punctuation-test',datasource:'npm',newValue:failedValue}],321);
+  for(const candidate of [failedValue,futureValue]){
+    const matched=await applyPackageRules({packageName:'punctuation-test',depName:'punctuation-test',
+      datasource:'npm',newValue:candidate,packageRules:rules},'test');
+    assert.equal(matched.dependencyDashboardApproval===true,candidate===failedValue);
+  }
+}
+console.log('PASS: exact-value matchers quarantine only 1.2.3-beta, v2.0.0+incompatible and ~1.2.3');
