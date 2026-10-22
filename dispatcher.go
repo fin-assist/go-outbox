@@ -1,0 +1,345 @@
+package outbox
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"math/rand/v2"
+	"sync/atomic"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+// Event is a durable protobuf event. Payload and key must never be logged or used as labels.
+type Event struct {
+	Topic, Key string
+	Payload    []byte
+}
+
+// Delivery sends a system RPC. It must honour cancellation and return only after the call ends.
+// Recipients must handle duplicate and out-of-order versions, and acknowledge tombstoned users.
+type Delivery func(context.Context, Event) error
+
+// Routes maps topics to bounded, operator-configured target names and delivery methods.
+// It is copied by NewDispatcher. Do not mutate a map while constructing a dispatcher.
+type Routes map[string]map[string]Delivery
+
+// Options configures primary-only dispatch. Clock and dependencies are required. PollInterval
+// defaults to 3s, BatchSize to 50 (maximum 50). RPC deadlines are always 30 seconds.
+// The pool needs at least two available connections: one listener and one dispatcher.
+type Options struct {
+	Pool         *pgxpool.Pool
+	Routes       Routes
+	Now          func() time.Time
+	Logger       *slog.Logger
+	Registerer   prometheus.Registerer
+	PollInterval time.Duration
+	BatchSize    int
+}
+
+// Dispatcher is safe for concurrent use except Run, which may run once at a time.
+// It starts no goroutines until Run is called and uses only the supplied primary pool.
+type Dispatcher struct {
+	options    Options
+	running    atomic.Bool
+	count, age *prometheus.GaugeVec
+	failures   *prometheus.CounterVec
+}
+
+// NewDispatcher validates/copies configuration and registers bounded per-target metrics.
+// Registration failures are returned; successfully registered metrics are rolled back on failure.
+func NewDispatcher(o Options) (*Dispatcher, error) {
+	if o.Pool == nil || o.Now == nil || o.Logger == nil || o.Registerer == nil || len(o.Routes) == 0 {
+		return nil, errors.New("outbox: dependencies and routes required")
+	}
+	if o.PollInterval == 0 {
+		o.PollInterval = 3 * time.Second
+	}
+	if o.BatchSize == 0 {
+		o.BatchSize = 50
+	}
+	if o.PollInterval < 0 || o.BatchSize < 1 || o.BatchSize > 50 {
+		return nil, errors.New("outbox: invalid poll interval or batch size")
+	}
+	routes := Routes{}
+	for topic, targets := range o.Routes {
+		if !validName(topic, 200) || len(targets) == 0 {
+			return nil, errors.New("outbox: invalid route")
+		}
+		routes[topic] = map[string]Delivery{}
+		for target, send := range targets {
+			if !validName(target, 200) || send == nil {
+				return nil, errors.New("outbox: invalid target")
+			}
+			routes[topic][target] = send
+		}
+	}
+	o.Routes = routes
+	d := &Dispatcher{options: o, count: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "finassist_outbox_rows", Help: "Pending rows by configured target; unexpanded events use the empty target."}, []string{"target"}), age: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "finassist_outbox_oldest_age_seconds", Help: "Age of the oldest pending row by target."}, []string{"target"}), failures: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "finassist_outbox_delivery_errors_total", Help: "Failed deliveries by configured target."}, []string{"target"})}
+	collectors := []prometheus.Collector{d.count, d.age, d.failures}
+	for i, c := range collectors {
+		if err := o.Registerer.Register(c); err != nil {
+			for _, prior := range collectors[:i] {
+				o.Registerer.Unregister(prior)
+			}
+			return nil, err
+		}
+	}
+	return d, nil
+}
+
+// Run dispatches until cancellation, reconnecting the listener/primary after database failures.
+// No RPC runs inside a transaction. A short row-lock transaction obtains a session advisory lock;
+// the dedicated connection holds it through RPC and acknowledgement. Process death frees the
+// lock and leaves the row. An uncertain acknowledgement may lead to a duplicate delivery.
+// Cancellation is returned as ctx.Err(). A second concurrent Run returns an error.
+func (d *Dispatcher) Run(ctx context.Context) error {
+	if !d.running.CompareAndSwap(false, true) {
+		return errors.New("outbox: already running")
+	}
+	defer d.running.Store(false)
+	for ctx.Err() == nil {
+		if err := d.cycle(ctx); err != nil && ctx.Err() == nil {
+			d.options.Logger.WarnContext(ctx, "outbox primary unavailable")
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		d.wait(ctx)
+	}
+	return ctx.Err()
+}
+func (d *Dispatcher) wait(ctx context.Context) {
+	c, err := d.options.Pool.Acquire(ctx)
+	if err != nil {
+		d.pause(ctx)
+		return
+	}
+	defer func() {
+		raw := c.Hijack()
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = raw.Close(closeCtx)
+	}()
+	if _, err = c.Exec(ctx, `LISTEN finassist_outbox`); err != nil {
+		d.pause(ctx)
+		return
+	}
+	// Drain after LISTEN, so a publication between the first drain and LISTEN is visible.
+	_ = d.cycle(ctx)
+	wait, cancel := context.WithTimeout(ctx, d.options.PollInterval)
+	defer cancel()
+	_, _ = c.Conn().WaitForNotification(wait)
+}
+func (d *Dispatcher) cycle(ctx context.Context) error {
+	for range d.options.BatchSize {
+		found, err := d.one(ctx)
+		if err != nil {
+			return err
+		}
+		if !found {
+			break
+		}
+	}
+	return d.observe(ctx)
+}
+
+type row struct {
+	id       int64
+	event    Event
+	target   string
+	attempts int
+	created  time.Time
+}
+
+func (d *Dispatcher) one(ctx context.Context) (bool, error) {
+	c, err := d.options.Pool.Acquire(ctx)
+	if err != nil {
+		return false, err
+	}
+	// A session lock must never escape to another pool borrower, even after cancellation.
+	defer func() {
+		raw := c.Hijack()
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = raw.Close(closeCtx)
+	}()
+	tx, err := c.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var recovery bool
+	if err = tx.QueryRow(ctx, `SELECT pg_is_in_recovery()`).Scan(&recovery); err != nil {
+		return false, err
+	}
+	if recovery {
+		return false, errors.New("outbox: primary required")
+	}
+	var selected *row
+	var afterTime time.Time
+	var afterID int64
+	for selected == nil {
+		rows, queryErr := tx.Query(ctx, `SELECT id,next_attempt_at FROM outbox_events WHERE next_attempt_at<=$1 AND (next_attempt_at,id)>($2,$3) ORDER BY next_attempt_at,id LIMIT 50 FOR UPDATE SKIP LOCKED`, d.options.Now(), afterTime, afterID)
+		if queryErr != nil {
+			return false, queryErr
+		}
+		type candidate struct {
+			id  int64
+			due time.Time
+		}
+		var candidates []candidate
+		for rows.Next() {
+			var candidate candidate
+			if err = rows.Scan(&candidate.id, &candidate.due); err != nil {
+				rows.Close()
+				return false, err
+			}
+			candidates = append(candidates, candidate)
+		}
+		rows.Close()
+		if err = rows.Err(); err != nil {
+			return false, err
+		}
+		if len(candidates) == 0 {
+			break
+		}
+		for _, candidate := range candidates {
+			afterTime, afterID = candidate.due, candidate.id
+			var locked bool
+			if err = tx.QueryRow(ctx, `SELECT pg_try_advisory_lock(-$1::bigint)`, candidate.id).Scan(&locked); err != nil {
+				return false, err
+			}
+			if locked {
+				r := row{id: candidate.id}
+				if err = tx.QueryRow(ctx, `SELECT topic,event_key,payload,target,attempts,created_at FROM outbox_events WHERE id=$1`, r.id).Scan(&r.event.Topic, &r.event.Key, &r.event.Payload, &r.target, &r.attempts, &r.created); err != nil {
+					return false, err
+				}
+				selected = &r
+				break
+			}
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	if selected == nil {
+		return false, nil
+	}
+	r := *selected
+	if r.target == "" {
+		return true, d.fanout(ctx, c, r)
+	}
+	send := d.options.Routes[r.event.Topic][r.target]
+	var failure error
+	if send == nil {
+		failure = errors.New("route_unconfigured")
+	} else {
+		call, cancel := context.WithTimeout(ctx, 30*time.Second)
+		failure = send(call, r.event)
+		cancel()
+	}
+	if failure == nil {
+		_, err = c.Exec(ctx, `DELETE FROM outbox_events WHERE id=$1`, r.id)
+		return true, err
+	}
+	target := d.label(r.target)
+	d.failures.WithLabelValues(target).Inc()
+	// Persist a bounded classification only: peer errors can contain financial data/tokens.
+	classification := "delivery_failed"
+	if send == nil {
+		classification = "route_unconfigured"
+	}
+	_, err = c.Exec(ctx, `UPDATE outbox_events SET attempts=LEAST(attempts::bigint+1,2147483647)::integer,next_attempt_at=$2,last_error=$3 WHERE id=$1`, r.id, d.options.Now().Add(backoff(r.attempts, retryJitter())), classification)
+	return true, err
+}
+func (d *Dispatcher) fanout(ctx context.Context, c *pgxpool.Conn, r row) error {
+	targets := d.options.Routes[r.event.Topic]
+	if len(targets) == 0 {
+		_, err := c.Exec(ctx, `UPDATE outbox_events SET next_attempt_at=$2,last_error='route_unconfigured' WHERE id=$1`, r.id, d.options.Now().Add(5*time.Minute))
+		return err
+	}
+	tx, err := c.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for target := range targets {
+		if _, err = tx.Exec(ctx, `INSERT INTO outbox_events(topic,event_key,payload,target,next_attempt_at,created_at) VALUES($1,$2,$3,$4,$5,$6)`, r.event.Topic, r.event.Key, r.event.Payload, target, d.options.Now(), r.created); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM outbox_events WHERE id=$1`, r.id); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+func backoff(attempt int, jitter float64) time.Duration {
+	if attempt > 9 {
+		attempt = 9
+	}
+	base := time.Second << attempt
+	delay := time.Duration(float64(base) * (1 + jitter))
+	if delay > 5*time.Minute {
+		return 5 * time.Minute
+	}
+	return delay
+}
+func (d *Dispatcher) label(target string) string {
+	if target == "" {
+		return ""
+	}
+	for _, targets := range d.options.Routes {
+		if _, ok := targets[target]; ok {
+			return target
+		}
+	}
+	return "unconfigured"
+}
+func (d *Dispatcher) observe(ctx context.Context) error {
+	rows, err := d.options.Pool.Query(ctx, `SELECT target,count(*),min(created_at) FROM outbox_events GROUP BY target`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	counts := map[string]float64{}
+	ages := map[string]float64{}
+	for rows.Next() {
+		var target string
+		var count float64
+		var oldest time.Time
+		if err = rows.Scan(&target, &count, &oldest); err != nil {
+			return err
+		}
+		label := d.label(target)
+		counts[label] += count
+		age := d.options.Now().Sub(oldest).Seconds()
+		if age > ages[label] {
+			ages[label] = age
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	d.count.Reset()
+	d.age.Reset()
+	for target, count := range counts {
+		d.count.WithLabelValues(target).Set(count)
+		d.age.WithLabelValues(target).Set(ages[target])
+	}
+	return nil
+}
+
+func (d *Dispatcher) pause(ctx context.Context) {
+	timer := time.NewTimer(d.options.PollInterval)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+}
+
+// Retry jitter is scheduling noise, not a security boundary.
+func retryJitter() float64 { return rand.Float64() } //nolint:gosec // No secrets or identifiers are generated.
