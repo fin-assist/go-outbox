@@ -1,0 +1,46 @@
+name: Renovate policy tests
+on:
+  pull_request:
+  push:
+    branches: [main, 'release/**']
+permissions:
+  contents: read
+jobs:
+  policy-tests:
+    name: Renovate policy tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: timeout 60s python3 -m unittest discover -s scripts -p 'test_renovate*.py'
+
+  runtime-contract:
+    name: Renovate runtime contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      LOG_LEVEL: error
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Set locked runtime location
+        run: echo "RENOVATE_RUNTIME=$GITHUB_WORKSPACE/scripts/renovate-runtime" >> "$GITHUB_ENV"
+      - name: Install pinned Renovate without install scripts
+        working-directory: scripts/renovate-runtime
+        run: timeout 600s npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify Renovate grouping, retries and digests
+        run: timeout 90s node --experimental-test-module-mocks scripts/test_renovate_runtime.mjs
+      - name: Verify signed commit and PR metadata rendering
+        run: timeout 90s node --experimental-test-module-mocks scripts/test_renovate_metadata_runtime.mjs
