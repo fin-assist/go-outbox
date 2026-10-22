@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"math/rand/v2"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -19,7 +20,8 @@ type Event struct {
 }
 
 // Delivery sends a system RPC. It must honour cancellation and return only after the call ends.
-// Recipients must handle duplicate and out-of-order versions, and acknowledge tombstoned users.
+// It may run concurrently for distinct configured targets. Recipients must handle
+// duplicate and out-of-order versions, and acknowledge tombstoned users.
 type Delivery func(context.Context, Event) error
 
 // Routes maps topics to bounded, operator-configured target names and delivery methods.
@@ -28,7 +30,8 @@ type Routes map[string]map[string]Delivery
 
 // Options configures primary-only dispatch. Clock and dependencies are required. PollInterval
 // defaults to 3s, BatchSize to 50 (maximum 50). RPC deadlines are always 30 seconds.
-// The pool needs at least two available connections: one listener and one dispatcher.
+// The pool must reserve at least one connection per distinct target, plus two for
+// fan-out and LISTEN/observation. Configuration is bounded to 64 topics/targets.
 type Options struct {
 	Pool         *pgxpool.Pool
 	Routes       Routes
@@ -42,16 +45,17 @@ type Options struct {
 // Dispatcher is safe for concurrent use except Run, which may run once at a time.
 // It starts no goroutines until Run is called and uses only the supplied primary pool.
 type Dispatcher struct {
-	options    Options
-	running    atomic.Bool
-	count, age *prometheus.GaugeVec
-	failures   *prometheus.CounterVec
+	options     Options
+	running     atomic.Bool
+	count, age  *prometheus.GaugeVec
+	failures    *prometheus.CounterVec
+	observation sync.Mutex
 }
 
 // NewDispatcher validates/copies configuration and registers bounded per-target metrics.
 // Registration failures are returned; successfully registered metrics are rolled back on failure.
 func NewDispatcher(o Options) (*Dispatcher, error) {
-	if o.Pool == nil || o.Now == nil || o.Logger == nil || o.Registerer == nil || len(o.Routes) == 0 {
+	if o.Pool == nil || o.Now == nil || o.Logger == nil || o.Registerer == nil || len(o.Routes) == 0 || len(o.Routes) > 64 {
 		return nil, errors.New("outbox: dependencies and routes required")
 	}
 	if o.PollInterval == 0 {
@@ -64,8 +68,9 @@ func NewDispatcher(o Options) (*Dispatcher, error) {
 		return nil, errors.New("outbox: invalid poll interval or batch size")
 	}
 	routes := Routes{}
+	unique := map[string]bool{}
 	for topic, targets := range o.Routes {
-		if !validName(topic, 200) || len(targets) == 0 {
+		if !validName(topic, 200) || len(targets) == 0 || len(targets) > 64 {
 			return nil, errors.New("outbox: invalid route")
 		}
 		routes[topic] = map[string]Delivery{}
@@ -74,7 +79,11 @@ func NewDispatcher(o Options) (*Dispatcher, error) {
 				return nil, errors.New("outbox: invalid target")
 			}
 			routes[topic][target] = send
+			unique[target] = true
 		}
+	}
+	if len(unique) > 64 || o.Pool.Config().MaxConns < int32(len(unique)+2) {
+		return nil, errors.New("outbox: too many targets or insufficient pool capacity")
 	}
 	o.Routes = routes
 	d := &Dispatcher{options: o, count: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "finassist_outbox_rows", Help: "Pending rows by configured target; unexpanded events use the empty target."}, []string{"target"}), age: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "finassist_outbox_oldest_age_seconds", Help: "Age of the oldest pending row by target."}, []string{"target"}), failures: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "finassist_outbox_delivery_errors_total", Help: "Failed deliveries by configured target."}, []string{"target"})}
@@ -100,6 +109,10 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		return errors.New("outbox: already running")
 	}
 	defer d.running.Store(false)
+	metricsCtx, stopMetrics := context.WithCancel(ctx)
+	metricsDone := make(chan struct{})
+	go func() { defer close(metricsDone); d.observeLoop(metricsCtx) }()
+	defer func() { stopMetrics(); <-metricsDone }()
 	for ctx.Err() == nil {
 		if err := d.cycle(ctx); err != nil && ctx.Err() == nil {
 			d.options.Logger.WarnContext(ctx, "outbox primary unavailable")
@@ -133,9 +146,29 @@ func (d *Dispatcher) wait(ctx context.Context) {
 	defer cancel()
 	_, _ = c.Conn().WaitForNotification(wait)
 }
+
+var errRetryScheduled = errors.New("outbox: delivery retry scheduled")
+
+func (d *Dispatcher) targetNames() []string {
+	names := map[string]bool{}
+	for _, targets := range d.options.Routes {
+		for name := range targets {
+			names[name] = true
+		}
+	}
+	result := make([]string, 0, len(names))
+	for name := range names {
+		result = append(result, name)
+	}
+	return result
+}
 func (d *Dispatcher) cycle(ctx context.Context) error {
+	// Expand events first; this phase never calls a recipient.
 	for range d.options.BatchSize {
-		found, err := d.one(ctx)
+		found, err := d.oneFor(ctx, "", true)
+		if errors.Is(err, errRetryScheduled) {
+			break
+		}
 		if err != nil {
 			return err
 		}
@@ -143,7 +176,39 @@ func (d *Dispatcher) cycle(ctx context.Context) error {
 			break
 		}
 	}
+	var wg sync.WaitGroup
+	errorsCh := make(chan error, len(d.targetNames())+1)
+	// Isolate targets: one unavailable recipient cannot delay another recipient's RPC.
+	for _, target := range d.targetNames() {
+		wg.Go(func() {
+			for range d.options.BatchSize {
+				found, err := d.oneFor(ctx, target, true)
+				if errors.Is(err, errRetryScheduled) {
+					break
+				} // One failed attempt per target/cycle.
+				if err != nil {
+					errorsCh <- err
+					return
+				}
+				if !found {
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	close(errorsCh)
+	for err := range errorsCh {
+		return err
+	}
 	return d.observe(ctx)
+}
+func (d *Dispatcher) one(ctx context.Context) (bool, error) {
+	found, err := d.oneFor(ctx, "", false)
+	if errors.Is(err, errRetryScheduled) {
+		err = nil
+	}
+	return found, err
 }
 
 type row struct {
@@ -154,13 +219,18 @@ type row struct {
 	created  time.Time
 }
 
-func (d *Dispatcher) one(ctx context.Context) (bool, error) {
+func (d *Dispatcher) oneFor(ctx context.Context, targetFilter string, filter bool) (bool, error) {
 	c, err := d.options.Pool.Acquire(ctx)
 	if err != nil {
 		return false, err
 	}
+	lockMayExist := false
 	// A session lock must never escape to another pool borrower, even after cancellation.
 	defer func() {
+		if !lockMayExist {
+			c.Release()
+			return
+		}
 		raw := c.Hijack()
 		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -182,7 +252,7 @@ func (d *Dispatcher) one(ctx context.Context) (bool, error) {
 	var afterTime time.Time
 	var afterID int64
 	for selected == nil {
-		rows, queryErr := tx.Query(ctx, `SELECT id,next_attempt_at FROM outbox_events WHERE next_attempt_at<=$1 AND (next_attempt_at,id)>($2,$3) ORDER BY next_attempt_at,id LIMIT 50 FOR UPDATE SKIP LOCKED`, d.options.Now(), afterTime, afterID)
+		rows, queryErr := tx.Query(ctx, `SELECT id,next_attempt_at FROM outbox_events WHERE next_attempt_at<=$1 AND (next_attempt_at,id)>($2,$3) AND (NOT $4::boolean OR target=$5 OR ($5='' AND target<>ALL($6::text[]))) ORDER BY next_attempt_at,id LIMIT 50 FOR UPDATE SKIP LOCKED`, d.options.Now(), afterTime, afterID, filter, targetFilter, d.targetNames())
 		if queryErr != nil {
 			return false, queryErr
 		}
@@ -209,9 +279,11 @@ func (d *Dispatcher) one(ctx context.Context) (bool, error) {
 		for _, candidate := range candidates {
 			afterTime, afterID = candidate.due, candidate.id
 			var locked bool
+			lockMayExist = true
 			if err = tx.QueryRow(ctx, `SELECT pg_try_advisory_lock(-$1::bigint)`, candidate.id).Scan(&locked); err != nil {
 				return false, err
 			}
+			lockMayExist = locked
 			if locked {
 				r := row{id: candidate.id}
 				if err = tx.QueryRow(ctx, `SELECT topic,event_key,payload,target,attempts,created_at FROM outbox_events WHERE id=$1`, r.id).Scan(&r.event.Topic, &r.event.Key, &r.event.Payload, &r.target, &r.attempts, &r.created); err != nil {
@@ -253,7 +325,10 @@ func (d *Dispatcher) one(ctx context.Context) (bool, error) {
 		classification = "route_unconfigured"
 	}
 	_, err = c.Exec(ctx, `UPDATE outbox_events SET attempts=LEAST(attempts::bigint+1,2147483647)::integer,next_attempt_at=$2,last_error=$3 WHERE id=$1`, r.id, d.options.Now().Add(backoff(r.attempts, retryJitter())), classification)
-	return true, err
+	if err != nil {
+		return true, err
+	}
+	return true, errRetryScheduled
 }
 func (d *Dispatcher) fanout(ctx context.Context, c *pgxpool.Conn, r row) error {
 	targets := d.options.Routes[r.event.Topic]
@@ -299,6 +374,8 @@ func (d *Dispatcher) label(target string) string {
 	return "unconfigured"
 }
 func (d *Dispatcher) observe(ctx context.Context) error {
+	d.observation.Lock()
+	defer d.observation.Unlock()
 	rows, err := d.options.Pool.Query(ctx, `SELECT target,count(*),min(created_at) FROM outbox_events GROUP BY target`)
 	if err != nil {
 		return err
@@ -343,3 +420,22 @@ func (d *Dispatcher) pause(ctx context.Context) {
 
 // Retry jitter is scheduling noise, not a security boundary.
 func retryJitter() float64 { return rand.Float64() } //nolint:gosec // No secrets or identifiers are generated.
+
+func (d *Dispatcher) observeLoop(ctx context.Context) {
+	interval := d.options.PollInterval
+	if interval > 30*time.Second {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for ctx.Err() == nil {
+		if err := d.observe(ctx); err != nil && ctx.Err() == nil {
+			d.options.Logger.WarnContext(ctx, "outbox observation unavailable")
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			return
+		}
+	}
+}

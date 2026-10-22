@@ -3,6 +3,7 @@ package outbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -192,26 +193,38 @@ func TestTwoPodsAndCancellationReleaseLock(t *testing.T) {
 func TestRunLifecycle(t *testing.T) {
 	pool := database(t)
 	delivered := make(chan struct{}, 1)
-	d := dispatcher(t, pool, Routes{"t": {"x": func(context.Context, Event) error { delivered <- struct{}{}; return nil }}}, time.Now)
+	drainStarted := make(chan struct{})
+	var calls atomic.Int32
+	var enabled atomic.Bool
+	clock := func() time.Time {
+		now := time.Unix(0, 0)
+		if enabled.Load() {
+			now = time.Now()
+		}
+		// The initial empty cycle queries event and target once each. Call three is
+		// the post-LISTEN event drain; its query time is captured before publication.
+		if calls.Add(1) == 3 {
+			close(drainStarted)
+		}
+		return now
+	}
+	d := dispatcher(t, pool, Routes{"t": {"x": func(context.Context, Event) error { delivered <- struct{}{}; return nil }}}, clock)
+	d.options.PollInterval = time.Hour
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
-	d.options.PollInterval = time.Hour // Delivery must wake from NOTIFY, not the poll timer.
 	go func() { done <- d.Run(ctx) }()
-	for {
-		var listening bool
-		if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND query='LISTEN finassist_outbox' AND state='idle')`).Scan(&listening); err != nil {
-			t.Fatal(err)
-		}
-		if listening {
-			break
-		}
+	select {
+	case <-drainStarted:
+	case <-ctx.Done():
+		t.Fatal("post-LISTEN drain did not start")
 	}
 	publish(t, pool, "t", true)
+	enabled.Store(true)
 	select {
 	case <-delivered:
 	case <-ctx.Done():
-		t.Fatal("Run failed to deliver")
+		t.Fatal("NOTIFY did not wake Run")
 	}
 	if err := d.Run(ctx); err == nil {
 		t.Fatal("concurrent Run accepted")
@@ -222,7 +235,7 @@ func TestRunLifecycle(t *testing.T) {
 	}
 }
 func TestConfiguration(t *testing.T) {
-	pool := &pgxpool.Pool{}
+	pool := configurationPool(t)
 	base := Options{Pool: pool, Now: time.Now, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Registerer: prometheus.NewRegistry(), Routes: Routes{"t": {"x": func(context.Context, Event) error { return nil }}}}
 	for _, mutate := range []func(*Options){func(o *Options) { o.Pool = nil }, func(o *Options) { o.Now = nil }, func(o *Options) { o.Logger = nil }, func(o *Options) { o.Registerer = nil }, func(o *Options) { o.Routes = nil }, func(o *Options) { o.PollInterval = -1 }, func(o *Options) { o.BatchSize = 51 }, func(o *Options) { o.Routes = Routes{"": {}} }, func(o *Options) { o.Routes = Routes{"t": {"": nil}} }} {
 		o := base
@@ -364,7 +377,7 @@ func TestMetricRegistrationRollback(t *testing.T) {
 	if err := registry.Register(conflict); err != nil {
 		t.Fatal(err)
 	}
-	_, err := NewDispatcher(Options{Pool: &pgxpool.Pool{}, Now: time.Now, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Registerer: registry, Routes: Routes{"t": {"x": func(context.Context, Event) error { return nil }}}})
+	_, err := NewDispatcher(Options{Pool: configurationPool(t), Now: time.Now, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Registerer: registry, Routes: Routes{"t": {"x": func(context.Context, Event) error { return nil }}}})
 	if err == nil {
 		t.Fatal("conflict ignored")
 	}
@@ -372,4 +385,337 @@ func TestMetricRegistrationRollback(t *testing.T) {
 	if err = registry.Register(rows); err != nil {
 		t.Fatalf("partial constructor leaked collector: %v", err)
 	}
+}
+
+func TestFanoutRollbackAfterPartialWork(t *testing.T) {
+	for _, failure := range []string{"second target insert", "original delete"} {
+		t.Run(failure, func(t *testing.T) {
+			pool := database(t)
+			ctx := t.Context()
+			publish(t, pool, "t", true)
+			d := dispatcher(t, pool, Routes{"t": {"a": func(context.Context, Event) error { return nil }, "b": func(context.Context, Event) error { return nil }}}, time.Now)
+			var originalID int64
+			if err := pool.QueryRow(ctx, `SELECT id FROM outbox_events WHERE target=''`).Scan(&originalID); err != nil {
+				t.Fatal(err)
+			}
+			if failure == "second target insert" {
+				// A fresh queue has original id 1. The first target consumes id 2 and the next
+				// nextval fails. Sequence increments survive rollback, proving partial work ran.
+				if _, err := pool.Exec(ctx, `ALTER SEQUENCE outbox_events_id_seq MAXVALUE 2`); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				// Only a test fixture references the original event. Target INSERTs succeed,
+				// then DELETE violates this FK, exercising rollback after all inserts.
+				if _, err := pool.Exec(ctx, `CREATE TABLE fanout_delete_blocker(event_id bigint REFERENCES outbox_events(id)); INSERT INTO fanout_delete_blocker(event_id) SELECT id FROM outbox_events WHERE target=''`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if found, err := d.one(ctx); !found || err == nil {
+				t.Fatalf("forced failure did not occur: found=%v err=%v", found, err)
+			}
+			var total, originals, targets int
+			if err := pool.QueryRow(ctx, `SELECT count(*),count(*) FILTER(WHERE id=$1 AND target=''),count(*) FILTER(WHERE target<>'') FROM outbox_events`, originalID).Scan(&total, &originals, &targets); err != nil {
+				t.Fatal(err)
+			}
+			if total != 1 || originals != 1 || targets != 0 {
+				t.Fatalf("partial fanout survived rollback: total=%d originals=%d targets=%d", total, originals, targets)
+			}
+			var lastID int64
+			if err := pool.QueryRow(ctx, `SELECT last_value FROM outbox_events_id_seq`).Scan(&lastID); err != nil {
+				t.Fatal(err)
+			}
+			minimum := int64(2)
+			if failure == "original delete" {
+				minimum = 3
+			}
+			if lastID < minimum {
+				t.Fatalf("failure happened before expected inserts: sequence=%d", lastID)
+			}
+			if failure == "second target insert" {
+				if _, err := pool.Exec(ctx, `ALTER SEQUENCE outbox_events_id_seq NO MAXVALUE`); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if _, err := pool.Exec(ctx, `DROP TABLE fanout_delete_blocker`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if found, err := d.one(ctx); err != nil || !found {
+				t.Fatalf("retry fanout: %v %v", found, err)
+			}
+			if err := pool.QueryRow(ctx, `SELECT count(*),count(*) FILTER(WHERE target=''),count(DISTINCT target) FROM outbox_events`).Scan(&total, &originals, &targets); err != nil {
+				t.Fatal(err)
+			}
+			if total != 2 || originals != 0 || targets != 2 {
+				t.Fatalf("retry did not create full recipient set: %d %d %d", total, originals, targets)
+			}
+		})
+	}
+}
+
+func configurationPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	p, err := pgxpool.New(t.Context(), "postgres://localhost/unused?pool_max_conns=66")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.Close)
+	return p
+}
+
+func assertNoSessionLocks(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND database=(SELECT oid FROM pg_database WHERE datname=current_database())`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("session advisory locks leaked: %d", n)
+	}
+}
+func TestSessionLockCleanupForEveryOutcome(t *testing.T) {
+	for _, outcome := range []string{"success", "delivery failure", "cancel", "fanout", "unknown topic"} {
+		t.Run(outcome, func(t *testing.T) {
+			pool := database(t)
+			ctx := t.Context()
+			send := func(ctx context.Context, _ Event) error {
+				if outcome == "delivery failure" {
+					return errors.New("peer unavailable")
+				}
+				if outcome == "cancel" {
+					<-ctx.Done()
+					return ctx.Err()
+				}
+				return nil
+			}
+			d := dispatcher(t, pool, Routes{"t": {"x": send}}, time.Now)
+			topic := "t"
+			if outcome == "unknown topic" {
+				topic = "unknown"
+			}
+			publish(t, pool, topic, true)
+			if _, err := d.one(ctx); err != nil {
+				t.Fatal(err)
+			}
+			assertNoSessionLocks(t, pool)
+			if outcome == "fanout" || outcome == "unknown topic" {
+				return
+			}
+			call, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+			defer cancel()
+			_, err := d.one(call)
+			if err != nil && outcome != "cancel" {
+				t.Fatal(err)
+			}
+			assertNoSessionLocks(t, pool)
+		})
+	}
+}
+func TestSlowTargetDoesNotBlockHealthyTarget(t *testing.T) {
+	pool := database(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	slowEntered := make(chan struct{})
+	healthy := make(chan struct{})
+	d := dispatcher(t, pool, Routes{"t": {"a": func(ctx context.Context, _ Event) error { close(slowEntered); <-ctx.Done(); return ctx.Err() }, "b": func(context.Context, Event) error { close(healthy); return nil }}}, time.Now)
+	publish(t, pool, "t", true)
+	done := make(chan error, 1)
+	go func() { done <- d.cycle(ctx) }()
+	select {
+	case <-slowEntered:
+	case <-ctx.Done():
+		t.Fatal("slow target not entered")
+	}
+	select {
+	case <-healthy:
+	case <-ctx.Done():
+		t.Fatal("healthy target blocked by slow recipient")
+	}
+	cancel()
+	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	assertNoSessionLocks(t, pool)
+}
+func metricValue(t *testing.T, registry *prometheus.Registry, name, target string) float64 {
+	t.Helper()
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		if family.GetName() != name {
+			continue
+		}
+		for _, metric := range family.Metric {
+			for _, label := range metric.Label {
+				if label.GetName() == "target" && label.GetValue() == target {
+					if metric.Gauge != nil {
+						return metric.Gauge.GetValue()
+					}
+					return metric.Counter.GetValue()
+				}
+			}
+		}
+	}
+	return 0
+}
+func TestMetricValuesAndUnknownTopicScheduling(t *testing.T) {
+	pool := database(t)
+	now := time.Now().Add(time.Hour)
+	clock := func() time.Time { return now }
+	registry := prometheus.NewRegistry()
+	d, err := NewDispatcher(Options{Pool: pool, Routes: Routes{"t": {"b": func(context.Context, Event) error { return errors.New("secret peer") }}}, Now: clock, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Registerer: registry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publish(t, pool, "unknown", true)
+	publish(t, pool, "t", true)
+	if _, err = pool.Exec(t.Context(), `INSERT INTO outbox_events(topic,event_key,payload,target,next_attempt_at,created_at) VALUES('t','key',''::bytea,'removed-secret-target',$1,$2)`, now, now.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err = d.cycle(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for target, want := range map[string]float64{"": 1, "b": 1, "unconfigured": 1} {
+		if got := metricValue(t, registry, "finassist_outbox_rows", target); got != want {
+			t.Fatalf("rows target %q=%v want%v", target, got, want)
+		}
+	}
+	if got := metricValue(t, registry, "finassist_outbox_delivery_errors_total", "b"); got != 1 {
+		t.Fatalf("delivery errors=%v", got)
+	}
+	age := metricValue(t, registry, "finassist_outbox_oldest_age_seconds", "")
+	if age < 3590 {
+		t.Fatalf("age uses retry date instead of created_at: %v", age)
+	}
+	var attempts int
+	var last string
+	var due time.Time
+	if err = pool.QueryRow(t.Context(), `SELECT attempts,last_error,next_attempt_at FROM outbox_events WHERE topic='unknown'`).Scan(&attempts, &last, &due); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 0 || last != "route_unconfigured" || !due.Equal(now.Add(5*time.Minute)) {
+		t.Fatalf("unknown schedule %d %s %v", attempts, last, due)
+	}
+	now = now.Add(10 * time.Minute)
+	if err = d.observe(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := metricValue(t, registry, "finassist_outbox_oldest_age_seconds", ""); got-age < 599 {
+		t.Fatal("oldest age failed to advance")
+	}
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		for _, metric := range family.Metric {
+			for _, label := range metric.Label {
+				if label.GetValue() == "removed-secret-target" {
+					t.Fatal("unconfigured route leaked as label")
+				}
+			}
+		}
+	}
+	if _, err = pool.Exec(t.Context(), `DELETE FROM outbox_events`); err != nil {
+		t.Fatal(err)
+	}
+	if err = d.observe(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := metricValue(t, registry, "finassist_outbox_rows", ""); got != 0 {
+		t.Fatal("stale queue gauge")
+	}
+}
+
+func TestMetricsObserveWhileRecipientBlocked(t *testing.T) {
+	pool := database(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	registry := prometheus.NewRegistry()
+	d, err := NewDispatcher(Options{Pool: pool, Routes: Routes{"t": {"x": func(ctx context.Context, _ Event) error {
+		close(entered)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-release:
+			return nil
+		}
+	}}}, Now: time.Now, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Registerer: registry, PollInterval: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publish(t, pool, "t", true)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("recipient not entered")
+	}
+	// Change created_at after delivery began. Only the independent observer can see
+	// the new age while cycle is still waiting for this live RPC.
+	if _, err = pool.Exec(ctx, `UPDATE outbox_events SET created_at=$1`, time.Now().Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	for metricValue(t, registry, "finassist_outbox_oldest_age_seconds", "x") < 7190 {
+		if ctx.Err() != nil {
+			t.Fatal("metrics frozen behind blocked recipient")
+		}
+	}
+	close(release)
+	cancel()
+	if err = <-done; !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+}
+
+func TestDispatcherPoolCapacityAndRouteLimits(t *testing.T) {
+	pool, err := pgxpool.New(t.Context(), "postgres://localhost/unused?pool_max_conns=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	o := Options{Pool: pool, Now: time.Now, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Registerer: prometheus.NewRegistry(), Routes: Routes{"t": {"x": func(context.Context, Event) error { return nil }}}}
+	if _, err = NewDispatcher(o); err == nil {
+		t.Fatal("insufficient pool capacity accepted")
+	}
+	o.Pool = configurationPool(t)
+	o.Routes = Routes{}
+	for i := 0; i < 65; i++ {
+		o.Routes[fmt.Sprintf("topic-%d", i)] = map[string]Delivery{"x": func(context.Context, Event) error { return nil }}
+	}
+	if _, err = NewDispatcher(o); err == nil {
+		t.Fatal("unbounded topics accepted")
+	}
+	o.Routes = Routes{"t": {}}
+	for i := 0; i < 65; i++ {
+		o.Routes["t"][fmt.Sprintf("target-%d", i)] = func(context.Context, Event) error { return nil }
+	}
+	if _, err = NewDispatcher(o); err == nil {
+		t.Fatal("unbounded targets accepted")
+	}
+}
+
+func TestEmptyPollReusesSafeConnection(t *testing.T) {
+	pool := database(t)
+	d := dispatcher(t, pool, Routes{"t": {"x": func(context.Context, Event) error { return nil }}}, time.Now)
+	var before, after uint32
+	if err := pool.QueryRow(t.Context(), `SELECT pg_backend_pid()`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := d.one(t.Context()); err != nil || found {
+		t.Fatalf("empty poll %v %v", found, err)
+	}
+	if err := pool.QueryRow(t.Context(), `SELECT pg_backend_pid()`).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatal("empty poll destroyed a session without advisory locks")
+	}
+	assertNoSessionLocks(t, pool)
 }

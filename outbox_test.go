@@ -15,6 +15,7 @@ type transaction struct {
 	pgx.Tx
 	calls int
 	fail  int
+	cause error
 	args  [][]any
 }
 
@@ -22,6 +23,9 @@ func (t *transaction) Exec(_ context.Context, _ string, args ...any) (pgconn.Com
 	t.calls++
 	t.args = append(t.args, args)
 	if t.calls == t.fail {
+		if t.cause != nil {
+			return pgconn.CommandTag{}, t.cause
+		}
 		return pgconn.CommandTag{}, errors.New("secret SQL payload")
 	}
 	return pgconn.CommandTag{}, nil
@@ -81,5 +85,39 @@ func TestBackoff(t *testing.T) {
 	}
 	if backoff(0, 0) != time.Second || backoff(1, 0) != 2*time.Second || backoff(40, 0) != 5*time.Minute {
 		t.Fatal("wrong retry schedule")
+	}
+}
+
+func TestPublishErrorClassifications(t *testing.T) {
+	for _, original := range []error{context.Canceled, context.DeadlineExceeded, &pgconn.PgError{Code: "40001", Message: "secret SQL", Detail: "secret user", InternalQuery: "secret query"}, &pgconn.PgError{Code: "40P01", Message: "secret SQL"}} {
+		tx := &transaction{fail: 1, cause: original}
+		p, _ := NewPublisher(provider{tx}, time.Now)
+		err := p.Publish(t.Context(), "topic", "key", nil)
+		if strings.Contains(err.Error(), "secret") {
+			t.Fatal("raw error leaked")
+		}
+		if errors.Is(original, context.Canceled) || errors.Is(original, context.DeadlineExceeded) {
+			if !errors.Is(err, original) {
+				t.Fatalf("cancellation lost: %v", err)
+			}
+		} else {
+			var safe, expected *pgconn.PgError
+			if !errors.As(original, &expected) {
+				t.Fatal("expected PostgreSQL error fixture")
+			}
+			if !errors.As(err, &safe) || safe.Code != expected.Code || safe.Detail != "" || safe.InternalQuery != "" || strings.Contains(safe.Message, "secret") {
+				t.Fatalf("unsafe or missing SQLSTATE: %v", safe)
+			}
+		}
+	}
+	tx := &transaction{}
+	p, _ := NewPublisher(provider{tx}, time.Now)
+	for _, names := range [][2]string{{string([]byte{255}), "key"}, {"topic", string([]byte{255})}} {
+		if !errors.Is(p.Publish(t.Context(), names[0], names[1], nil), ErrInvalidEvent) {
+			t.Fatal("invalid UTF8 accepted")
+		}
+	}
+	if tx.calls != 0 {
+		t.Fatal("invalid UTF8 touched transaction")
 	}
 }

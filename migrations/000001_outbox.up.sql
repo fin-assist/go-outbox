@@ -1,5 +1,6 @@
 -- Durable events and independent deliveries share a queue. Empty target is an event
 -- awaiting fan-out. bigint counts lifetime inserts, including deleted retry deliveries.
+-- attempts is a saturating counter capped at 2147483647 by the retry UPDATE.
 CREATE TABLE outbox_events (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     topic text NOT NULL,

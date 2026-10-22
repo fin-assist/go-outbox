@@ -7,3 +7,5 @@
 ### Добавлено
 
 - FIN-109: transactional Publish, fanout по конфигурации, primary-only worker с LISTEN/poll, безопасные повторы системных gRPC-вызовов, метрики и инструкция внедрения.
+
+- FIN-214: правило Squawk `prefer-bigint-over-int` отключено; ширина целочисленных полей выбирается по диапазону домена.
