@@ -82,5 +82,99 @@ class MeasureTest(unittest.TestCase):
         self.assertEqual(cd.ranges([]), "")
 
 
+class ReportTest(unittest.TestCase):
+    def test_totals_count_lines_once_and_exclude_nonproduction(self):
+        p = cd.parse_profile(PROFILE + f"{MOD}/internal/a/a.go:50.1,60.1 0 1\n", MOD)
+        p["a_test.go"] = {1: True}
+        p["testdata/a.go"] = {1: True}
+        self.assertEqual(cd.totals(p), (6, 8))
+        self.assertIn("75.0 %", cd.render_totals(*cd.totals(p)))
+        self.assertNotIn("100.0 %", cd.render_totals(0, 0))
+        self.assertIn("Нет данных", cd.render_totals(0, 0))
+
+    def test_generated_production_is_included(self):
+        self.assertTrue(cd.is_production("gen/go/finerr/errors.gen.go"))
+        self.assertTrue(cd.is_production("finassist/common/v1/common.pb.go"))
+
+    def test_cli_combines_totals_and_diff_and_keeps_diff_threshold(self):
+        import contextlib
+        import io
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "go.mod").write_text(f"module {MOD}\n")
+            profile = root / "cover.out"
+            profile.write_text(PROFILE)
+            summary = root / "summary.md"
+            with patch.object(cd, "ROOT", root), patch.object(cd, "git_diff", return_value=DIFF):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    status = cd.main(["--profile", str(profile), "--base", "origin/main", "--min", "70", "--summary", str(summary)])
+            self.assertEqual(status, 1)  # total 75 %, changed 66.7 %
+            text = out.getvalue()
+            self.assertLess(text.index("### Покрытие проекта"), text.index("### Покрытие изменённых строк"))
+            self.assertIn("75.0 %", text)
+            self.assertIn("66.7 %", text)
+            self.assertIn("| `internal/a/a.go`", text)
+            self.assertEqual(summary.read_text(), text + "\n")
+
+    def test_multiple_modules_keep_repository_paths_and_merge_repeated_profiles(self):
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inputs = []
+            for directory, covered in [("gen/go", 1), ("tools", 0)]:
+                module = root / directory
+                module.mkdir(parents=True)
+                (module / "go.mod").write_text(f"module example.com/{directory}\n")
+                profile = module / "cover.out"
+                profile.write_text(f"mode: atomic\nexample.com/{directory}/same.go:1.1,2.2 1 {covered}\n")
+                inputs.append((module, profile))
+            with patch.object(cd, "ROOT", root):
+                p = cd.load_profiles(inputs + [inputs[0]])
+            self.assertEqual(set(p), {"gen/go/same.go", "tools/same.go"})
+            self.assertEqual(cd.totals(p), (2, 4))
+            self.assertEqual(cd.measure({"tools/same.go": {1}}, p)[0].uncovered, [1])
+
+    def test_empty_scaffold_has_both_sections_without_percentage(self):
+        import contextlib
+        import io
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(cd, "ROOT", Path(tmp)), patch.object(cd, "git_diff", return_value=""):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.assertEqual(cd.main(["--empty", "--base", "origin/main"]), 0)
+                self.assertIn("### Покрытие проекта", out.getvalue())
+                self.assertIn("### Покрытие изменённых строк", out.getvalue())
+                self.assertNotIn("100.0 %", out.getvalue())
+
+    def test_empty_mode_rejects_existing_module(self):
+        import contextlib
+        import io
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "go.mod").write_text(f"module {MOD}\n")
+            with patch.object(cd, "ROOT", root), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    cd.main(["--empty"])
+            self.assertEqual(raised.exception.code, 2)
+
+    def test_workflow_uses_single_coverage_test_run_and_keeps_fork_guard(self):
+        workflow = Path(__file__).resolve().parent.parent / ".github/workflows/ci.yml"
+        text = workflow.read_text()
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", text)
+        self.assertIn("<!-- coverage-report (ci.yml) -->", text)
+        self.assertIn("--summary", text)
+        # One execution per Go module, never a second run for project totals.
+        commands = [line for line in text.splitlines() if "go test " in line and "-coverprofile=" in line]
+        self.assertEqual(len(commands), 2 if "--module-profile" in text else 1)
+
+
 if __name__ == "__main__":
     unittest.main()

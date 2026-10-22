@@ -54,7 +54,7 @@ jobs:
 
       # Informational: the 80 % target for changed lines is checked in review (AGENTS.md, Tests);
       # nothing fails on a low value or a failed script. The branch name goes through env.
-      - name: Coverage of changed lines
+      - name: Project and changed-line coverage
         if: github.event_name == 'pull_request'
         continue-on-error: true
         env:
