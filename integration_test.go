@@ -869,6 +869,7 @@ func TestRunRemovedRoutesDoNotStarveNewFanout(t *testing.T) {
 	}
 	publish(t, pool, "new", true)
 	d := dispatcher(t, pool, Routes{"new": {"b": func(context.Context, Event) error { healthy <- struct{}{}; return nil }}}, time.Now)
+	d.options.PollInterval = time.Hour // Progress must come from full-batch draining and wake signals.
 	done := make(chan error, 1)
 	go func() { done <- d.Run(ctx) }()
 	select {
