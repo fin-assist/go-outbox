@@ -1,0 +1,46 @@
+{
+  "description": "Dependency updates (docs/releasing.md, «Как сервисы получают обновления»). Keep packageRules the same as in fin-assist/go-service-template.",
+  "extends": [
+    "config:recommended"
+  ],
+  "timezone": "Europe/Moscow",
+  "postUpdateOptions": [
+    "gomodTidy"
+  ],
+  "labels": [
+    "dependencies"
+  ],
+  "packageRules": [
+    {
+      "description": "fin-assist libraries and contracts/gen/go: a PR per module as soon as a version is tagged",
+      "matchPackageNames": [
+        "github.com/fin-assist/**"
+      ],
+      "schedule": [
+        "at any time"
+      ],
+      "prPriority": 10
+    },
+    {
+      "description": "Everything else (Go modules, GitHub Actions, images): one grouped PR a week",
+      "matchPackageNames": [
+        "!github.com/fin-assist/**"
+      ],
+      "groupName": "third-party dependencies",
+      "schedule": [
+        "before 9am on monday"
+      ]
+    },
+    {
+      "description": "The Go version (go and toolchain directives) is raised by hand, together with CI",
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchDepTypes": [
+        "golang",
+        "toolchain"
+      ],
+      "enabled": false
+    }
+  ]
+}
