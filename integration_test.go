@@ -787,11 +787,16 @@ func (d *Dispatcher) drainOnce(ctx context.Context) error {
 	return d.observe(ctx)
 }
 func (d *Dispatcher) one(ctx context.Context) (bool, error) {
-	found, err := d.oneFor(ctx, "", false)
-	if errors.Is(err, errRetryScheduled) {
-		err = nil
+	for _, target := range append([]string{""}, d.targetNames()...) {
+		found, err := d.oneFor(ctx, target)
+		if errors.Is(err, errRetryScheduled) {
+			err = nil
+		}
+		if found || err != nil {
+			return found, err
+		}
 	}
-	return found, err
+	return false, nil
 }
 
 func TestRunDeliversNewEventsWhileSlowSuccessfulTargetBusy(t *testing.T) {

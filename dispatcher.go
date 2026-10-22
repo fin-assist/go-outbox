@@ -205,7 +205,7 @@ func (d *Dispatcher) targetNames() []string {
 // A full batch immediately continues in that lane, independently of all other lanes.
 func (d *Dispatcher) batch(ctx context.Context, target string, onWork func()) (bool, error) {
 	for range d.options.BatchSize {
-		found, err := d.oneFor(ctx, target, true)
+		found, err := d.oneFor(ctx, target)
 		if errors.Is(err, errRetryScheduled) {
 			return false, nil
 		}
@@ -230,7 +230,7 @@ type row struct {
 	created  time.Time
 }
 
-func (d *Dispatcher) oneFor(ctx context.Context, targetFilter string, filter bool) (bool, error) {
+func (d *Dispatcher) oneFor(ctx context.Context, targetFilter string) (bool, error) {
 	c, err := d.options.Pool.Acquire(ctx)
 	if err != nil {
 		return false, err
@@ -263,7 +263,7 @@ func (d *Dispatcher) oneFor(ctx context.Context, targetFilter string, filter boo
 	var afterTime time.Time
 	var afterID int64
 	for selected == nil {
-		rows, queryErr := tx.Query(ctx, `SELECT id,next_attempt_at FROM outbox_events WHERE next_attempt_at<=$1 AND (next_attempt_at,id)>($2,$3) AND (NOT $4::boolean OR target=$5 OR ($5='' AND target<>ALL($6::text[]))) ORDER BY next_attempt_at,id LIMIT 50 FOR UPDATE SKIP LOCKED`, d.options.Now(), afterTime, afterID, filter, targetFilter, d.targetNames())
+		rows, queryErr := tx.Query(ctx, `SELECT id,next_attempt_at FROM outbox_events WHERE next_attempt_at<=$1 AND (next_attempt_at,id)>($2,$3) AND (target=$4 OR ($4='' AND target<>ALL($5::text[]))) ORDER BY next_attempt_at,id LIMIT 50 FOR UPDATE SKIP LOCKED`, d.options.Now(), afterTime, afterID, targetFilter, d.targetNames())
 		if queryErr != nil {
 			return false, queryErr
 		}
