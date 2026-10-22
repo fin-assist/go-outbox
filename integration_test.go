@@ -206,7 +206,17 @@ func TestRunLifecycle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
+	d.options.PollInterval = time.Hour // Delivery must wake from NOTIFY, not the poll timer.
 	go func() { done <- d.Run(ctx) }()
+	for {
+		var listening bool
+		if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND query='LISTEN finassist_outbox' AND state='idle')`).Scan(&listening); err != nil {
+			t.Fatal(err)
+		}
+		if listening {
+			break
+		}
+	}
 	publish(t, pool, "t", true)
 	select {
 	case <-delivered:
@@ -355,5 +365,21 @@ func TestCommitNotification(t *testing.T) {
 	notification, err := c.Conn().WaitForNotification(ctx)
 	if err != nil || notification.Channel != "finassist_outbox" || notification.Payload != "" {
 		t.Fatalf("commit notification %v %v", notification, err)
+	}
+}
+
+func TestMetricRegistrationRollback(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	conflict := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "finassist_outbox_oldest_age_seconds", Help: "Age of the oldest pending row by target."}, []string{"target"})
+	if err := registry.Register(conflict); err != nil {
+		t.Fatal(err)
+	}
+	_, err := NewDispatcher(Options{Pool: &pgxpool.Pool{}, Now: time.Now, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Registerer: registry, Routes: Routes{"t": {"x": func(context.Context, Event) error { return nil }}}})
+	if err == nil {
+		t.Fatal("conflict ignored")
+	}
+	rows := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "finassist_outbox_rows", Help: "Pending rows by configured target; unexpanded events use the empty target."}, []string{"target"})
+	if err = registry.Register(rows); err != nil {
+		t.Fatalf("partial constructor leaked collector: %v", err)
 	}
 }
