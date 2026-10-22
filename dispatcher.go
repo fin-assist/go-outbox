@@ -28,8 +28,8 @@ type Delivery func(context.Context, Event) error
 // It is copied by NewDispatcher. Do not mutate a map while constructing a dispatcher.
 type Routes map[string]map[string]Delivery
 
-// Options configures primary-only dispatch. Clock and dependencies are required. PollInterval
-// defaults to 3s, BatchSize to 50 (maximum 50). RPC deadlines are always 30 seconds.
+// Options configures primary-only dispatch. Dependencies are required; Now must be concurrency safe.
+// Defaults: poll 3s, batch 50 per independent lane (maximum 50), RPC deadline 30s.
 // The pool must reserve at least one connection per distinct target, plus three for
 // fan-out, LISTEN and independent observation. Configuration is bounded to 64 topics/targets.
 type Options struct {
