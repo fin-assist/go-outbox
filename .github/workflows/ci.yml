@@ -22,12 +22,12 @@ jobs:
       contents: read
       pull-requests: write # the coverage comment
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history: coverage of changed lines diffs the PR against its base branch.
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Access to private modules
@@ -101,8 +101,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Access to private modules
@@ -114,7 +114,7 @@ jobs:
           fi
       # forbidigo: errors only through finerr, no process-wide logger, metrics registry or
       # environment; depguard: no frameworks (.golangci.yml).
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
 
@@ -126,10 +126,10 @@ jobs:
   api:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # tags
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Access to private modules
@@ -171,7 +171,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       # A released migration runs in every service that updated the library: it is never
@@ -185,9 +185,9 @@ jobs:
             echo "Add a new migration instead (docs/releasing.md, «Миграции»)."
             exit 1
           fi
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
       # Squawk lints the new up files; down files are checked by the up -> down -> up test.
       - name: Squawk
         run: |
