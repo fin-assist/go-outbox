@@ -1,5 +1,5 @@
-// Package outbox is the outbox library of «Понятные финансы» (fin-assist/go-outbox, FIN-109).
-//
-// The skeleton comes from fin-assist/go-library-template; the implementation, what it needs
-// from the service and the integration guide (README.md, «Внедрение») come with FIN-109.
+// Package outbox implements a PostgreSQL transactional outbox with configurable gRPC
+// recipients. Publish uses the service-owned transaction; Run delivers outside it.
+// Delivery is at least once and unordered. Recipients must atomically check versions
+// and tombstones. Use only a primary pool and apply Migrations before starting Run.
 package outbox
