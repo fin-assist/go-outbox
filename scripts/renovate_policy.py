@@ -224,12 +224,20 @@ class GitHub:
     def sync_baseline(self, base):
         # Read approved JSON from a pinned target commit, never execute target code.
         branch = self.get('branches/' + urllib.parse.quote(base, safe=''))
-        source = self.get('contents/renovate-base.json?ref=' + branch['commit']['sha'])
+        try:
+            source = self.get('contents/renovate-base.json?ref=' + branch['commit']['sha'])
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                raise ValueError(f'Target branch {base} has no renovate-base.json; add the reviewed baseline before activation') from error
+            raise
         baseline = base64.b64decode(source['content'])
         value = json.loads(baseline)  # Never execute target JSON.
         if self.repo == 'fin-assist/android':
             stack = [rule for rule in value.get('packageRules', []) if rule.get('groupName') == 'androidx compose stack']
-            if (len(stack) != 1 or stack[0].get('matchPackageNames') != COMPOSE_PACKAGES
+            members = stack[0].get('matchPackageNames') if len(stack) == 1 else None
+            if (len(stack) != 1 or not isinstance(members, list)
+                    or len(members) != len(COMPOSE_PACKAGES) or not all(isinstance(name, str) for name in members)
+                    or set(members) != set(COMPOSE_PACKAGES)
                     or stack[0].get('separateMajorMinor') is not False):
                 raise ValueError('Target Compose baseline differs from trusted controller; owner must coordinate code/preset migration before sync')
         current = self.get('contents/base.json?ref=' + POLICY_BRANCH)
@@ -607,6 +615,16 @@ def reconcile_pr(api, config, base, candidate, trigger):
     receipt = receipts.get(receipt_key)
     state = receipt['state'] if receipt else None
     if all(j['conclusion'] == 'success' for j in required):
+        if state is not None:
+            claims = state.get('runs') if isinstance(state, dict) else None
+            if (not isinstance(state, dict) or state.get('sha') != sha or not isinstance(claims, dict) or claims.keys() != runs.keys()
+                    or any(not isinstance(claims[name], dict)
+                           or claims[name].get('run_id') != run['id']
+                           or type(claims[name].get('attempt')) is not int
+                           or type(claims[name].get('retried')) is not bool
+                           or run['run_attempt'] != claims[name]['attempt'] + int(claims[name]['retried'])
+                           for name, run in runs.items())):
+                return  # A manual extra attempt/new run stays with the owner.
         if compose_update(items) or api.android_stack_changed(pr):
             return
         # All native required checks/statuses must be green.

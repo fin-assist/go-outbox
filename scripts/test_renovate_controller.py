@@ -695,9 +695,10 @@ class QueuedRetryEvidenceTests(unittest.TestCase):
             elif final=='failure':self.assertEqual(api.pr['state'],'closed')
             else:
                 self.assertEqual(api.pr['state'],'open');self.assertEqual(api.actions,before)
-                api.run.update(run_attempt=3,conclusion='failure');api.jobs[0]['conclusion']='failure'
-                reconcile(api,api.config)
-                self.assertEqual(api.pr['state'],'open');self.assertEqual(api.actions,before)
+                for manual in ('failure','success'):
+                    api.run.update(run_attempt=3,conclusion=manual);api.jobs[0]['conclusion']=manual
+                    reconcile(api,api.config)
+                    self.assertEqual(api.pr['state'],'open');self.assertEqual(api.actions,before)
 
 
 class NormalAndDigestPolicyTests(unittest.TestCase):
@@ -720,6 +721,24 @@ class NormalAndDigestPolicyTests(unittest.TestCase):
         self.assertTrue(any(r.get('matchJsonata')==[HAS_DIGEST] for r in recoveries))
         self.assertTrue(any(r.get('matchJsonata')==[NO_DIGEST] for r in quarantines))
         self.assertTrue(all(r['description']==RECOVERY_DESCRIPTION for r in policy['packageRules'][:2]))
+
+
+class GreenReceiptBoundaryTests(unittest.TestCase):
+    def test_successful_manual_extra_attempt_or_replacement_run_never_auto_merges(self):
+        state={'sha':'abc','runs':{'ci.yml':{'run_id':1,'attempt':1,'retried':True}}}
+        for run_id,attempt,merge in [(1,2,True),(1,3,False),(99,2,False)]:
+            api=Fake();api.receipts={'1:abc':{'state':state}};api.run.update(id=run_id,run_attempt=attempt)
+            reconcile(api,api.config)
+            self.assertEqual(any(path=='pulls/1/merge' for path,_ in api.actions),merge)
+            self.assertFalse(any(path.endswith('rerun-failed-jobs') or path=='policy' for path,_ in api.actions))
+
+
+class MergeabilityBoundaryTests(unittest.TestCase):
+    def test_unknown_conflicted_behind_or_blocked_pr_waits_without_mutation(self):
+        for mergeable,state in [(None,'clean'),(False,'clean')]+[(True,s) for s in ('behind','blocked','dirty','unknown')]:
+            api=Fake();api.pr.update(mergeable=mergeable,mergeable_state=state)
+            reconcile(api,api.config)
+            self.assertEqual(api.actions,[])
 
 if __name__ == '__main__':
     unittest.main()

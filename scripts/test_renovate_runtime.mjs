@@ -378,3 +378,17 @@ for(const [extra,approval,recreate] of [
   assert.equal(matched.recreateWhen,recreate);
 }
 console.log('PASS: failed ordinary tag and failed digest keep disjoint gates; fixed digest/pinDigest escape approval');
+
+// A moving Actions major tag can name a genuinely different, future artifact.
+const actionValues=[{depName:'actions/setup-python',datasource:'github-tags',newValue:'v6',newMajor:6},
+  {depName:'actions/setup-python',datasource:'github-tags',newValue:'v6',newMajor:6,newDigest:'bad-action-sha'}];
+const actionRules=[...productionRules('recovery_rules',actionValues,67),...productionRules('quarantine_rules',actionValues,67)];
+for(const [extra,approval] of [
+  [{},true], [{newDigest:'bad-action-sha'},true], [{newDigest:'fixed-action-sha'},false],
+]){
+  const matched=await applyPackageRules({packageName:'actions/setup-python',depName:'actions/setup-python',
+    datasource:'github-tags',newValue:'v6',newMajor:6,updateType:'major',...extra,packageRules:actionRules},'moving-action-major');
+  assert.equal(matched.dependencyDashboardApproval===true,approval);
+  assert.equal(matched.recreateWhen,approval?'never':'always');
+}
+console.log('PASS: failed floating Actions major and exact SHA stay gated; future major artifact with new SHA remains eligible');

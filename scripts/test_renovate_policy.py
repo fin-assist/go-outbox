@@ -340,5 +340,43 @@ class ComposeTargetBaselineBoundaryTests(unittest.TestCase):
         with patch.object(renovate_policy_data,'COMPOSE_PACKAGES',renovate_policy_data.COMPOSE_PACKAGES+['androidx.navigation3:**']):
             with self.assertRaises(ValueError):api.read_policy()
 
+
+class ComposeBaselineAcceptanceTests(unittest.TestCase):
+    def test_matching_or_reordered_members_sync_but_missing_or_duplicate_group_refuses(self):
+        from renovate_policy_data import COMPOSE_PACKAGES
+        for members in [list(COMPOSE_PACKAGES),list(reversed(COMPOSE_PACKAGES))]:
+            stack={'groupName':'androidx compose stack','separateMajorMinor':False,'matchPackageNames':members}
+            for groups,allowed in [([stack],True),([],False),([stack,stack],False),
+                                   ([{**stack,'separateMajorMinor':True}],False),
+                                   ([{k:v for k,v in stack.items() if k!='separateMajorMinor'}],False)]:
+                target={'packageRules':groups};api=GitHub('credential','fin-assist/android');writes=[]
+                def get(path):
+                    if path.startswith('branches/'):return {'commit':{'sha':'selected-sha'}}
+                    if path=='contents/renovate-base.json?ref=selected-sha':return {'content':base64.b64encode(json.dumps(target).encode()).decode()}
+                    if path=='contents/base.json?ref=renovate-policy':return {'sha':'old-sha','content':base64.b64encode(b'{}').decode()}
+                    raise AssertionError(path)
+                api.get=get;api.request=lambda method,path,data:writes.append((method,path,data))
+                if allowed:
+                    api.sync_baseline('release/1.0.0');self.assertEqual(len(writes),1)
+                    self.assertEqual(writes[0][:2],('PUT','contents/base.json'))
+                    self.assertEqual(json.loads(base64.b64decode(writes[0][2]['content'])),target)
+                else:
+                    with self.assertRaises(ValueError):api.sync_baseline('release/1.0.0')
+                    self.assertEqual(writes,[])
+
+
+class MissingTargetBaselineTests(unittest.TestCase):
+    def test_release_without_baseline_explains_failure_before_generated_reads_or_writes(self):
+        import urllib.error
+        api=GitHub('credential','owner/repo');writes=[]
+        def get(path):
+            if path.startswith('branches/'):return {'commit':{'sha':'old-release-sha'}}
+            if path=='contents/renovate-base.json?ref=old-release-sha':raise urllib.error.HTTPError(path,404,'Not Found',{},None)
+            raise AssertionError(path)
+        api.get=get;api.request=lambda *args:writes.append(args)
+        with self.assertRaisesRegex(ValueError,'Target branch release/1.0.0 has no renovate-base.json'):
+            api.sync_baseline('release/1.0.0')
+        self.assertEqual(writes,[])
+
 if __name__ == '__main__':
     unittest.main()
