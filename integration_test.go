@@ -17,11 +17,19 @@ import (
 	"github.com/fin-assist/go-outbox/internal/pgtest"
 )
 
-func database(t *testing.T) *pgxpool.Pool {
+func database(t *testing.T, maxConnections ...int32) *pgxpool.Pool {
 	t.Helper()
 	dsn := pgtest.DSN(t)
 	pgtest.Apply(t, dsn, MigrationsTable, Migrations)
-	pool, err := pgxpool.New(t.Context(), dsn)
+	config, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.MaxConns = 8
+	if len(maxConnections) > 0 {
+		config.MaxConns = maxConnections[0]
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +81,7 @@ func TestTransactionalPersistenceAndFanout(t *testing.T) {
 	var a, b int
 	d := dispatcher(t, pool, Routes{"settings": {"a": func(context.Context, Event) error { a++; return nil }, "b": func(context.Context, Event) error { b++; return nil }}}, time.Now)
 	// A new dispatcher sees the committed event after the publisher/process is gone.
-	if err := d.cycle(t.Context()); err != nil {
+	if err := d.drainOnce(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if a != 1 || b != 1 || pending(t, pool) != 0 {
@@ -95,7 +103,7 @@ func TestIndependentRetryAndUnknownRoutes(t *testing.T) {
 	}}}, clock)
 	publish(t, pool, "settings", true)
 	publish(t, pool, "unknown", true)
-	if err := d.cycle(t.Context()); err != nil {
+	if err := d.drainOnce(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if a != 1 || b != 1 || pending(t, pool) != 2 {
@@ -110,7 +118,7 @@ func TestIndependentRetryAndUnknownRoutes(t *testing.T) {
 	if attempts != 1 || last != "delivery_failed" || due.Before(now.Add(time.Second)) || due.After(now.Add(2*time.Second)) {
 		t.Fatalf("retry %d %s %v", attempts, last, due)
 	}
-	if err := d.cycle(t.Context()); err != nil {
+	if err := d.drainOnce(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if b != 1 {
@@ -119,7 +127,7 @@ func TestIndependentRetryAndUnknownRoutes(t *testing.T) {
 	mu.Lock()
 	now = now.Add(6 * time.Minute)
 	mu.Unlock()
-	if err := d.cycle(t.Context()); err != nil {
+	if err := d.drainOnce(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if b != 2 || pending(t, pool) != 1 {
@@ -130,7 +138,7 @@ func TestIndependentRetryAndUnknownRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = d.cycle(t.Context()); err != nil {
+	if err = d.drainOnce(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if d.label("removed-secret-target") != "unconfigured" || pending(t, pool) != 1 {
@@ -193,45 +201,57 @@ func TestTwoPodsAndCancellationReleaseLock(t *testing.T) {
 func TestRunLifecycle(t *testing.T) {
 	pool := database(t)
 	delivered := make(chan struct{}, 1)
-	drainStarted := make(chan struct{})
-	var calls atomic.Int32
-	var enabled atomic.Bool
-	clock := func() time.Time {
-		now := time.Unix(0, 0)
-		if enabled.Load() {
-			now = time.Now()
-		}
-		// The initial empty cycle queries event and target once each. Call three is
-		// the post-LISTEN event drain; its query time is captured before publication.
-		if calls.Add(1) == 3 {
-			close(drainStarted)
-		}
-		return now
-	}
-	d := dispatcher(t, pool, Routes{"t": {"x": func(context.Context, Event) error { delivered <- struct{}{}; return nil }}}, clock)
-	d.options.PollInterval = time.Hour
+	d := dispatcher(t, pool, Routes{"t": {"x": func(context.Context, Event) error { delivered <- struct{}{}; return nil }}}, time.Now)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- d.Run(ctx) }()
-	select {
-	case <-drainStarted:
-	case <-ctx.Done():
-		t.Fatal("post-LISTEN drain did not start")
-	}
 	publish(t, pool, "t", true)
-	enabled.Store(true)
 	select {
 	case <-delivered:
 	case <-ctx.Done():
-		t.Fatal("NOTIFY did not wake Run")
+		t.Fatal("Run did not deliver")
 	}
 	if err := d.Run(ctx); err == nil {
 		t.Fatal("concurrent Run accepted")
 	}
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("shutdown %v", err)
+		t.Fatal(err)
+	}
+}
+func TestNotificationWaitCannotUseDrain(t *testing.T) {
+	pool := database(t)
+	entered := make(chan struct{})
+	var once sync.Once
+	clock := func() time.Time { once.Do(func() { close(entered) }); return time.Unix(0, 0) }
+	d := dispatcher(t, pool, Routes{"t": {"x": func(context.Context, Event) error { return nil }}}, clock)
+	d.options.PollInterval = time.Hour
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { d.wait(ctx, nil); close(done) }()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("post-LISTEN drain not entered")
+	}
+	publish(t, pool, "t", true)
+	select {
+	case <-done:
+		if ctx.Err() != nil {
+			t.Fatal("wait timed out without notification")
+		}
+	case <-ctx.Done():
+		t.Fatal("notification failed to wake waiter")
+	}
+	// All drain queries used epoch, so they could not consume the newly committed event.
+	var unexpanded int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM outbox_events WHERE target=''`).Scan(&unexpanded); err != nil {
+		t.Fatal(err)
+	}
+	if unexpanded != 1 {
+		t.Fatal("drain consumed future event")
 	}
 }
 func TestConfiguration(t *testing.T) {
@@ -341,7 +361,7 @@ func TestDatabaseErrorsAndLostConnection(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(t.Context(), time.Millisecond)
 		defer cancel()
-		d.wait(ctx)
+		d.wait(ctx, nil)
 	})
 }
 
@@ -466,24 +486,29 @@ func configurationPool(t *testing.T) *pgxpool.Pool {
 
 func assertNoSessionLocks(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	var n int
-	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND database=(SELECT oid FROM pg_database WHERE datname=current_database())`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 0 {
-		t.Fatalf("session advisory locks leaked: %d", n)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	for {
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND database=(SELECT oid FROM pg_database WHERE datname=current_database())`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n == 0 {
+			return
+		}
 	}
 }
 func TestSessionLockCleanupForEveryOutcome(t *testing.T) {
 	for _, outcome := range []string{"success", "delivery failure", "cancel", "fanout", "unknown topic"} {
 		t.Run(outcome, func(t *testing.T) {
 			pool := database(t)
-			ctx := t.Context()
+			entered := make(chan struct{})
 			send := func(ctx context.Context, _ Event) error {
 				if outcome == "delivery failure" {
-					return errors.New("peer unavailable")
+					return errors.New("unavailable")
 				}
 				if outcome == "cancel" {
+					close(entered)
 					<-ctx.Done()
 					return ctx.Err()
 				}
@@ -495,18 +520,36 @@ func TestSessionLockCleanupForEveryOutcome(t *testing.T) {
 				topic = "unknown"
 			}
 			publish(t, pool, topic, true)
-			if _, err := d.one(ctx); err != nil {
+			if _, err := d.one(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 			assertNoSessionLocks(t, pool)
 			if outcome == "fanout" || outcome == "unknown topic" {
 				return
 			}
-			call, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
-			defer cancel()
-			_, err := d.one(call)
-			if err != nil && outcome != "cancel" {
-				t.Fatal(err)
+			if outcome == "cancel" {
+				call, cancel := context.WithCancel(t.Context())
+				done := make(chan error, 1)
+				go func() { _, err := d.one(call); done <- err }()
+				deadline, stop := context.WithTimeout(t.Context(), 3*time.Second)
+				defer stop()
+				select {
+				case <-entered:
+				case <-deadline.Done():
+					cancel()
+					t.Fatal("RPC not entered before cancellation")
+				}
+				cancel()
+				if err := <-done; !errors.Is(err, context.Canceled) {
+					t.Fatalf("actual worker cancellation not observed: %v", err)
+				}
+				if pending(t, pool) != 1 {
+					t.Fatal("cancel lost durable row")
+				}
+			} else {
+				if _, err := d.one(t.Context()); err != nil {
+					t.Fatal(err)
+				}
 			}
 			assertNoSessionLocks(t, pool)
 		})
@@ -521,7 +564,7 @@ func TestSlowTargetDoesNotBlockHealthyTarget(t *testing.T) {
 	d := dispatcher(t, pool, Routes{"t": {"a": func(ctx context.Context, _ Event) error { close(slowEntered); <-ctx.Done(); return ctx.Err() }, "b": func(context.Context, Event) error { close(healthy); return nil }}}, time.Now)
 	publish(t, pool, "t", true)
 	done := make(chan error, 1)
-	go func() { done <- d.cycle(ctx) }()
+	go func() { done <- d.drainOnce(ctx) }()
 	select {
 	case <-slowEntered:
 	case <-ctx.Done():
@@ -563,7 +606,7 @@ func metricValue(t *testing.T, registry *prometheus.Registry, name, target strin
 }
 func TestMetricValuesAndUnknownTopicScheduling(t *testing.T) {
 	pool := database(t)
-	now := time.Now().Add(time.Hour)
+	now := time.Now().Add(time.Hour).Truncate(time.Microsecond)
 	clock := func() time.Time { return now }
 	registry := prometheus.NewRegistry()
 	d, err := NewDispatcher(Options{Pool: pool, Routes: Routes{"t": {"b": func(context.Context, Event) error { return errors.New("secret peer") }}}, Now: clock, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Registerer: registry})
@@ -575,7 +618,7 @@ func TestMetricValuesAndUnknownTopicScheduling(t *testing.T) {
 	if _, err = pool.Exec(t.Context(), `INSERT INTO outbox_events(topic,event_key,payload,target,next_attempt_at,created_at) VALUES('t','key',''::bytea,'removed-secret-target',$1,$2)`, now, now.Add(-2*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if err = d.cycle(t.Context()); err != nil {
+	if err = d.drainOnce(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	for target, want := range map[string]float64{"": 1, "b": 1, "unconfigured": 1} {
@@ -675,7 +718,7 @@ func TestMetricsObserveWhileRecipientBlocked(t *testing.T) {
 }
 
 func TestDispatcherPoolCapacityAndRouteLimits(t *testing.T) {
-	pool, err := pgxpool.New(t.Context(), "postgres://localhost/unused?pool_max_conns=2")
+	pool, err := pgxpool.New(t.Context(), "postgres://localhost/unused?pool_max_conns=3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -718,4 +761,133 @@ func TestEmptyPollReusesSafeConnection(t *testing.T) {
 		t.Fatal("empty poll destroyed a session without advisory locks")
 	}
 	assertNoSessionLocks(t, pool)
+}
+
+// drainOnce exercises the same production batch primitive synchronously for storage
+// assertions. Lifecycle, notifications and cross-lane progress are tested through Run.
+func (d *Dispatcher) drainOnce(ctx context.Context) error {
+	if _, err := d.batch(ctx, "", nil); err != nil {
+		return err
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, len(d.targetNames()))
+	for _, target := range d.targetNames() {
+		wg.Go(func() {
+			_, err := d.batch(ctx, target, nil)
+			if err != nil {
+				errs <- err
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		return err
+	}
+	return d.observe(ctx)
+}
+func (d *Dispatcher) one(ctx context.Context) (bool, error) {
+	found, err := d.oneFor(ctx, "", false)
+	if errors.Is(err, errRetryScheduled) {
+		err = nil
+	}
+	return found, err
+}
+
+func TestRunDeliversNewEventsWhileSlowSuccessfulTargetBusy(t *testing.T) {
+	// Exactly targets+3 slots: two RPC lanes, fan-out, LISTEN and observer.
+	pool := database(t, 5)
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	healthy := make(chan struct{}, 2)
+	var successful atomic.Int32
+	slow := func(ctx context.Context, _ Event) error {
+		entered <- struct{}{}
+		select {
+		case <-release:
+			successful.Add(1)
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	d := dispatcher(t, pool, Routes{"slow": {"a": slow}, "healthy": {"b": func(context.Context, Event) error { healthy <- struct{}{}; return nil }}}, time.Now)
+	publish(t, pool, "slow", true)
+	publish(t, pool, "slow", true)
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+	wait := func(ch <-chan struct{}, what string) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			t.Fatal(what)
+		}
+	}
+	wait(entered, "slow RPC never started")
+	publish(t, pool, "healthy", true)
+	wait(healthy, "new healthy event blocked behind slow RPC")
+	// The first slow call succeeds, and the second blocks. A second NEW healthy event
+	// must still get its own fan-out and delivery without a shared batch barrier.
+	select {
+	case release <- struct{}{}:
+	case <-ctx.Done():
+		t.Fatal("slow success not released")
+	}
+	wait(entered, "second slow RPC never started")
+	if successful.Load() != 1 {
+		t.Fatal("first slow RPC did not succeed")
+	}
+	publish(t, pool, "healthy", true)
+	wait(healthy, "new healthy event blocked behind second slow RPC")
+	select {
+	case release <- struct{}{}:
+	case <-ctx.Done():
+		t.Fatal("second slow success not released")
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	assertNoSessionLocks(t, pool)
+}
+func TestRunRemovedRoutesDoNotStarveNewFanout(t *testing.T) {
+	pool := database(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	healthy := make(chan struct{}, 1)
+	// More than one batch of old orphan deliveries must not stop new fan-out.
+	if _, err := pool.Exec(ctx, `INSERT INTO outbox_events(topic,event_key,payload,target,next_attempt_at,created_at) SELECT 'old','key',''::bytea,'removed-target',$1,$1 FROM generate_series(1,80)`, time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	publish(t, pool, "new", true)
+	d := dispatcher(t, pool, Routes{"new": {"b": func(context.Context, Event) error { healthy <- struct{}{}; return nil }}}, time.Now)
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+	select {
+	case <-healthy:
+	case <-ctx.Done():
+		t.Fatal("old orphan deliveries starved new event")
+	}
+	var classified int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE target='removed-target' AND last_error='route_unconfigured'`).Scan(&classified); err != nil {
+		t.Fatal(err)
+	}
+	if classified != 80 {
+		t.Fatalf("only %d orphan routes classified", classified)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	assertNoSessionLocks(t, pool)
+}
+func TestPoolCapacityIncludesListenerFanoutAndObserver(t *testing.T) {
+	pool := database(t, 4)
+	options := Options{Pool: pool, Now: time.Now, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Registerer: prometheus.NewRegistry(), Routes: Routes{"t": {"a": func(context.Context, Event) error { return nil }, "b": func(context.Context, Event) error { return nil }}}}
+	if _, err := NewDispatcher(options); err == nil {
+		t.Fatal("accepted targets+2 instead of targets+3 capacity")
+	}
 }

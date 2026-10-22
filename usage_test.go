@@ -110,7 +110,7 @@ func TestServiceUsage(t *testing.T) {
 		if e = tx.Commit(t.Context()); e != nil {
 			t.Fatal(e)
 		}
-		if e = d.cycle(t.Context()); e != nil {
+		if e = d.drainOnce(t.Context()); e != nil {
 			t.Fatal(e)
 		}
 	}

@@ -30,8 +30,8 @@ type Routes map[string]map[string]Delivery
 
 // Options configures primary-only dispatch. Clock and dependencies are required. PollInterval
 // defaults to 3s, BatchSize to 50 (maximum 50). RPC deadlines are always 30 seconds.
-// The pool must reserve at least one connection per distinct target, plus two for
-// fan-out and LISTEN/observation. Configuration is bounded to 64 topics/targets.
+// The pool must reserve at least one connection per distinct target, plus three for
+// fan-out, LISTEN and independent observation. Configuration is bounded to 64 topics/targets.
 type Options struct {
 	Pool         *pgxpool.Pool
 	Routes       Routes
@@ -82,7 +82,7 @@ func NewDispatcher(o Options) (*Dispatcher, error) {
 			unique[target] = true
 		}
 	}
-	if len(unique) > 64 || o.Pool.Config().MaxConns < int32(len(unique)+2) {
+	if len(unique) > 64 || o.Pool.Config().MaxConns < int32(len(unique)+3) {
 		return nil, errors.New("outbox: too many targets or insufficient pool capacity")
 	}
 	o.Routes = routes
@@ -109,22 +109,58 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		return errors.New("outbox: already running")
 	}
 	defer d.running.Store(false)
-	metricsCtx, stopMetrics := context.WithCancel(ctx)
-	metricsDone := make(chan struct{})
-	go func() { defer close(metricsDone); d.observeLoop(metricsCtx) }()
-	defer func() { stopMetrics(); <-metricsDone }()
+	runCtx, stop := context.WithCancel(ctx)
+	var workers sync.WaitGroup
+	defer func() { stop(); workers.Wait() }()
+	workers.Go(func() { d.observeLoop(runCtx) })
+	wakes := map[string]chan struct{}{}
+	for _, target := range d.targetNames() {
+		wake := make(chan struct{}, 1)
+		wakes[target] = wake
+		workers.Go(func() { d.targetLoop(runCtx, target, wake) })
+	}
+	wakeTargets := func() {
+		for _, wake := range wakes {
+			select {
+			case wake <- struct{}{}:
+			default:
+			}
+		}
+	}
 	for ctx.Err() == nil {
-		if err := d.cycle(ctx); err != nil && ctx.Err() == nil {
+		more, err := d.batch(runCtx, "", wakeTargets)
+		if err != nil && ctx.Err() == nil {
 			d.options.Logger.WarnContext(ctx, "outbox primary unavailable")
 		}
 		if ctx.Err() != nil {
 			break
 		}
-		d.wait(ctx)
+		if more {
+			continue
+		}
+		d.wait(runCtx, wakeTargets)
 	}
 	return ctx.Err()
 }
-func (d *Dispatcher) wait(ctx context.Context) {
+func (d *Dispatcher) targetLoop(ctx context.Context, target string, wake <-chan struct{}) {
+	for ctx.Err() == nil {
+		more, err := d.batch(ctx, target, nil)
+		if err != nil && ctx.Err() == nil {
+			d.options.Logger.WarnContext(ctx, "outbox primary unavailable")
+		}
+		if more {
+			continue
+		}
+		timer := time.NewTimer(d.options.PollInterval)
+		select {
+		case <-timer.C:
+		case <-wake:
+		case <-ctx.Done():
+		}
+		timer.Stop()
+	}
+}
+func (d *Dispatcher) wait(ctx context.Context, onWork func()) {
 	c, err := d.options.Pool.Acquire(ctx)
 	if err != nil {
 		d.pause(ctx)
@@ -141,7 +177,9 @@ func (d *Dispatcher) wait(ctx context.Context) {
 		return
 	}
 	// Drain after LISTEN, so a publication between the first drain and LISTEN is visible.
-	_ = d.cycle(ctx)
+	if more, _ := d.batch(ctx, "", onWork); more {
+		return
+	}
 	wait, cancel := context.WithTimeout(ctx, d.options.PollInterval)
 	defer cancel()
 	_, _ = c.Conn().WaitForNotification(wait)
@@ -162,53 +200,26 @@ func (d *Dispatcher) targetNames() []string {
 	}
 	return result
 }
-func (d *Dispatcher) cycle(ctx context.Context) error {
-	// Expand events first; this phase never calls a recipient.
+
+// batch drains one lane. Empty target handles fan-out and removed routes without RPC.
+// A full batch immediately continues in that lane, independently of all other lanes.
+func (d *Dispatcher) batch(ctx context.Context, target string, onWork func()) (bool, error) {
 	for range d.options.BatchSize {
-		found, err := d.oneFor(ctx, "", true)
+		found, err := d.oneFor(ctx, target, true)
 		if errors.Is(err, errRetryScheduled) {
-			break
+			return false, nil
 		}
 		if err != nil {
-			return err
+			return false, err
 		}
 		if !found {
-			break
+			return false, nil
+		}
+		if onWork != nil {
+			onWork()
 		}
 	}
-	var wg sync.WaitGroup
-	errorsCh := make(chan error, len(d.targetNames())+1)
-	// Isolate targets: one unavailable recipient cannot delay another recipient's RPC.
-	for _, target := range d.targetNames() {
-		wg.Go(func() {
-			for range d.options.BatchSize {
-				found, err := d.oneFor(ctx, target, true)
-				if errors.Is(err, errRetryScheduled) {
-					break
-				} // One failed attempt per target/cycle.
-				if err != nil {
-					errorsCh <- err
-					return
-				}
-				if !found {
-					return
-				}
-			}
-		})
-	}
-	wg.Wait()
-	close(errorsCh)
-	for err := range errorsCh {
-		return err
-	}
-	return d.observe(ctx)
-}
-func (d *Dispatcher) one(ctx context.Context) (bool, error) {
-	found, err := d.oneFor(ctx, "", false)
-	if errors.Is(err, errRetryScheduled) {
-		err = nil
-	}
-	return found, err
+	return true, nil
 }
 
 type row struct {
@@ -327,6 +338,9 @@ func (d *Dispatcher) oneFor(ctx context.Context, targetFilter string, filter boo
 	_, err = c.Exec(ctx, `UPDATE outbox_events SET attempts=LEAST(attempts::bigint+1,2147483647)::integer,next_attempt_at=$2,last_error=$3 WHERE id=$1`, r.id, d.options.Now().Add(backoff(r.attempts, retryJitter())), classification)
 	if err != nil {
 		return true, err
+	}
+	if send == nil {
+		return true, nil
 	}
 	return true, errRetryScheduled
 }
