@@ -1,0 +1,39 @@
+name: Renovate policy controller
+on:
+  workflow_run:
+    workflows: [CI, ci, Renovate policy tests]
+    types: [completed]
+  create:
+  delete:
+  push:
+    branches: [main, 'release/**']
+  schedule:
+    - cron: '17,47 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+  checks: read
+concurrency:
+  group: renovate-policy-controller
+  cancel-in-progress: false
+jobs:
+  reconcile:
+    if: vars.RENOVATE_POLICY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Always execute reviewed code from the default branch. Never checkout a PR
+      # or download artifacts/caches produced by an untrusted CI run.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Reconcile Renovate PRs
+        env:
+          RENOVATE_POLICY_ENABLED: ${{ vars.RENOVATE_POLICY_ENABLED }}
+          GITHUB_READ_TOKEN: ${{ github.token }}
+          RENOVATE_POLICY_TOKEN: ${{ secrets.RENOVATE_POLICY_TOKEN }}
+        run: timeout 540s python3 scripts/renovate_policy.py
