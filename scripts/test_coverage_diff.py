@@ -10,6 +10,16 @@ cd = importlib.util.module_from_spec(_spec)
 sys.modules["coverage_diff"] = cd  # dataclasses look the module up by name
 _spec.loader.exec_module(cd)
 
+def tracked_modules(repository):
+    """Tracked Go modules only: local clones and agent worktrees are not CI inputs."""
+    import subprocess
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z", "--", "go.mod", "**/go.mod"],
+        cwd=repository, capture_output=True, text=True, check=True, timeout=10,
+    ).stdout.split("\0")
+    return {Path(path).parent.as_posix() for path in tracked if path}
+
+
 MOD = "github.com/fin-assist/svc"
 
 PROFILE = """mode: atomic
@@ -311,6 +321,25 @@ class ReportTest(unittest.TestCase):
                 "api repos/fin-assist/example/issues/7/comments --paginate",
             ], "a failed lookup must not POST or PATCH any comment")
 
+    def test_module_inventory_ignores_untracked_nested_modules(self):
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            repository = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=repository, check=True, capture_output=True, timeout=10)
+            (repository / "go.mod").write_text("module example.com/root\n")
+            subprocess.run(["git", "add", "go.mod"], cwd=repository, check=True, capture_output=True, timeout=10)
+            self.assertEqual(tracked_modules(repository), {"."})
+            for name in [".contracts/gen/go", ".claude/worktrees/example"]:
+                directory = repository / name
+                directory.mkdir(parents=True)
+                (directory / "go.mod").write_text("module example.com/local\n")
+            self.assertEqual(tracked_modules(repository), {"."})
+            (repository / "tools").mkdir()
+            (repository / "tools/go.mod").write_text("module example.com/tools\n")
+            subprocess.run(["git", "add", "tools/go.mod"], cwd=repository, check=True, capture_output=True, timeout=10)
+            self.assertEqual(tracked_modules(repository), {".", "tools"})
+
     def test_workflow_uses_single_coverage_test_run_and_keeps_fork_guard(self):
         workflow = Path(__file__).resolve().parent.parent / ".github/workflows/ci.yml"
         text = workflow.read_text()
@@ -323,7 +352,7 @@ class ReportTest(unittest.TestCase):
         # One execution per Go module, never a second run for project totals.
         commands = [line for line in text.splitlines() if "go test " in line and "-coverprofile=" in line]
         repository = workflow.parent.parent.parent
-        modules = {p.parent.relative_to(repository).as_posix() for p in repository.rglob("go.mod")}
+        modules = tracked_modules(repository)
         self.assertEqual(len(commands), max(1, len(modules)))
         executed_modules = []
         current_directory = "."
