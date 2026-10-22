@@ -287,5 +287,34 @@ class ReleaseQueryAdapterTests(unittest.TestCase):
         self.assertEqual(api.base(),'release/2.0.0')
         self.assertEqual(paths,['branches','pulls?state=closed&base=main&head=owner%3Arelease%2F2.0.0'])
 
+
+class NativeStatusBoundaryTests(unittest.TestCase):
+    def test_external_status_cannot_be_hidden_by_green_job_for_unbound_context(self):
+        api=GitHub('credential','owner/repo')
+        jobs=[{'name':'external','status':'completed','conclusion':'success'}]
+        for app in (None,-1):
+            api.get=lambda path:{'required_status_checks':{'checks':[{'context':'external','app_id':app}]}}
+            for state in ('failure','pending','error','success'):
+                result=api.native_checks('main',[],[{'context':'external','state':state}],jobs)
+                if state in ('pending','error'):self.assertIsNone(result)
+                elif state=='failure':self.assertTrue(any(check['conclusion']!='success' for check in result))
+                else:self.assertTrue(all(check['conclusion']=='success' for check in result))
+    def test_legacy_required_contexts_read_commit_statuses(self):
+        api=GitHub('credential','owner/repo')
+        api.get=lambda path:{'required_status_checks':{'contexts':['external']}}
+        self.assertIsNone(api.native_checks('main',[],[],[]))
+        self.assertEqual(api.native_checks('main',[],[{'context':'external','state':'failure'}],[]),[{'status':'completed','conclusion':'failure'}])
+        self.assertEqual(api.native_checks('main',[],[{'context':'external','state':'success'}],[]),[{'status':'completed','conclusion':'success'}])
+    def test_non_strict_or_missing_required_context_never_passes_protection(self):
+        import copy
+        api=GitHub('credential','owner/repo');api.controller_login='controller';api.pages=lambda path:[]
+        valid={'enforce_admins':{'enabled':True},'required_status_checks':{'strict':True,'contexts':['go']},'restrictions':{'users':[{'login':'controller'}],'teams':[],'apps':[]}}
+        api.rule=copy.deepcopy(valid);api.get=lambda path:api.rule
+        self.assertTrue(api.protection('main',['go']))
+        api.rule['required_status_checks']['strict']=False
+        self.assertFalse(api.protection('main',['go']))
+        api.rule=copy.deepcopy(valid);api.rule['required_status_checks']['contexts']=[]
+        self.assertFalse(api.protection('main',['go']))
+
 if __name__ == '__main__':
     unittest.main()

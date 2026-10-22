@@ -38,7 +38,8 @@ jobs:
       - name: Set locked runtime location
         run: echo "RENOVATE_RUNTIME=$GITHUB_WORKSPACE/scripts/renovate-runtime" >> "$GITHUB_ENV"
       - name: Install pinned Renovate without install scripts
-        run: timeout 600s npm ci --ignore-scripts --prefix scripts/renovate-runtime --no-audit --no-fund
+        working-directory: scripts/renovate-runtime
+        run: timeout 600s npm ci --ignore-scripts --no-audit --no-fund
       - name: Verify Renovate grouping, retries and digests
         run: timeout 90s node --experimental-test-module-mocks scripts/test_renovate_runtime.mjs
       - name: Verify signed commit and PR metadata rendering

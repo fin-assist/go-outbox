@@ -74,7 +74,7 @@ function dependency(name, value, old = '3.0.0', type = 'major') {
 function productionRules(builder, items, generation = 123) {
   // Exercise both production builders, never an imitation of policy logic.
   const controller = process.env.RENOVATE_POLICY_SCRIPT ?? fileURLToPath(new URL('./renovate_policy.py', import.meta.url));
-  const code = "import importlib.util,json,sys; s=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(getattr(m,sys.argv[4])(json.loads(sys.argv[2]),int(sys.argv[3]))))";
+  const code = "import importlib.util,json,sys; from pathlib import Path; sys.path.insert(0,str(Path(sys.argv[1]).resolve().parent)); s=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(getattr(m,sys.argv[4])(json.loads(sys.argv[2]),int(sys.argv[3]))))";
   return JSON.parse(execFileSync('python3', ['-c', code, controller,
     JSON.stringify(items), String(generation), builder], {encoding:'utf8',timeout:5000}));
 }
@@ -194,7 +194,7 @@ console.log('PASS: future minor/patch values remain eligible');
 const { applyPackageRules } = await import(mod('util/package-rules/index.js'));
 const controllerPath = process.env.RENOVATE_POLICY_SCRIPT ?? fileURLToPath(new URL('./renovate_policy.py', import.meta.url));
 const digestInput = [{ depName:'postgres', datasource:'docker', newValue:'18', newDigest:'sha256:bad' }];
-const digestCode = "import importlib.util,json,sys; s=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(m.quarantine_rules(json.loads(sys.argv[2]),99)))";
+const digestCode = "import importlib.util,json,sys; from pathlib import Path; sys.path.insert(0,str(Path(sys.argv[1]).resolve().parent)); s=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(m.quarantine_rules(json.loads(sys.argv[2]),99)))";
 const digestRules = JSON.parse(execFileSync('python3',['-c',digestCode,controllerPath,JSON.stringify(digestInput)],{encoding:'utf8',timeout:5000}));
 for (const newDigest of ['sha256:bad','sha256:fixed']) {
   const matched = await applyPackageRules({ packageName:'postgres', depName:'postgres', datasource:'docker', newValue:'18', newDigest, packageRules:digestRules }, 'test');
@@ -256,7 +256,7 @@ console.log('PASS: numeric moving tag recovers fixed digests without newMajor; o
 // An automatically failed FIN-184 stack remains one jointly approved update.
 function stackRule(generation) {
   const controller = process.env.RENOVATE_POLICY_SCRIPT ?? fileURLToPath(new URL('./renovate_policy.py',import.meta.url));
-  const code = "import importlib.util,json,sys; s=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(m.compose_stack_rule(int(sys.argv[2]))))";
+  const code = "import importlib.util,json,sys; from pathlib import Path; sys.path.insert(0,str(Path(sys.argv[1]).resolve().parent)); s=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(m.compose_stack_rule(int(sys.argv[2]))))";
   return JSON.parse(execFileSync('python3',['-c',code,controller,String(generation)],{encoding:'utf8',timeout:5000}));
 }
 const firstStackRule = stackRule(987);

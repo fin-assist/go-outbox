@@ -71,7 +71,7 @@ assert.ok(Buffer.byteLength(capturedCommit)<12000,'Signed metadata must not seri
 assert.ok(!capturedCommit.includes('untrusted-release-field'));
 const controller=process.env.RENOVATE_POLICY_SCRIPT??fileURLToPath(new URL('./renovate_policy.py',import.meta.url));
 function parseProduction(message){
-  const code="import importlib.util,json,sys; s=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(m.updates(sys.stdin.read())))";
+  const code="import importlib.util,json,sys; from pathlib import Path; sys.path.insert(0,str(Path(sys.argv[1]).resolve().parent)); s=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(m.updates(sys.stdin.read())))";
   return JSON.parse(execFileSync('python3',['-c',code,controller],{input:message,encoding:'utf8',timeout:5000}));
 }
 const expected=Array.from({length:20},(_,i)=>({depName:`pkg-${i}`,newValue:'2.0.0',datasource:'npm',newMajor:2}));
