@@ -7,3 +7,12 @@ __pycache__/
 
 # Local Renovate runtime dependencies
 node_modules/
+
+# Per-suite coverage inputs and native reports.
+/unit.out
+/integration.out
+/api.out
+/*.jsonl
+/*.coverage.txt
+/*.report.txt
+/test-names.txt

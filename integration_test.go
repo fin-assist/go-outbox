@@ -71,7 +71,7 @@ func pending(t *testing.T, pool *pgxpool.Pool) int {
 	}
 	return n
 }
-func TestTransactionalPersistenceAndFanout(t *testing.T) {
+func TestIntegrationTransactionalPersistenceAndFanout(t *testing.T) {
 	pool := database(t)
 	publish(t, pool, "settings", false)
 	if pending(t, pool) != 0 {
@@ -88,7 +88,7 @@ func TestTransactionalPersistenceAndFanout(t *testing.T) {
 		t.Fatalf("fanout %d %d", a, b)
 	}
 }
-func TestIndependentRetryAndUnknownRoutes(t *testing.T) {
+func TestIntegrationIndependentRetryAndUnknownRoutes(t *testing.T) {
 	pool := database(t)
 	now := time.Now().Add(time.Second)
 	var mu sync.Mutex
@@ -145,7 +145,7 @@ func TestIndependentRetryAndUnknownRoutes(t *testing.T) {
 		t.Fatal("removed route lost")
 	}
 }
-func TestTwoPodsAndCancellationReleaseLock(t *testing.T) {
+func TestIntegrationTwoPodsAndCancellationReleaseLock(t *testing.T) {
 	pool := database(t)
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -198,7 +198,7 @@ func TestTwoPodsAndCancellationReleaseLock(t *testing.T) {
 		t.Fatal("session lock leaked")
 	}
 }
-func TestRunLifecycle(t *testing.T) {
+func TestIntegrationRunLifecycle(t *testing.T) {
 	pool := database(t)
 	delivered := make(chan struct{}, 1)
 	d := dispatcher(t, pool, Routes{"t": {"x": func(context.Context, Event) error { delivered <- struct{}{}; return nil }}}, time.Now)
@@ -220,7 +220,7 @@ func TestRunLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-func TestNotificationWaitCannotUseDrain(t *testing.T) {
+func TestIntegrationNotificationWaitCannotUseDrain(t *testing.T) {
 	pool := database(t)
 	entered := make(chan struct{})
 	var once sync.Once
@@ -254,7 +254,7 @@ func TestNotificationWaitCannotUseDrain(t *testing.T) {
 		t.Fatal("drain consumed future event")
 	}
 }
-func TestConfiguration(t *testing.T) {
+func TestIntegrationConfiguration(t *testing.T) {
 	pool := configurationPool(t)
 	base := Options{Pool: pool, Now: time.Now, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Registerer: prometheus.NewRegistry(), Routes: Routes{"t": {"x": func(context.Context, Event) error { return nil }}}}
 	for _, mutate := range []func(*Options){func(o *Options) { o.Pool = nil }, func(o *Options) { o.Now = nil }, func(o *Options) { o.Logger = nil }, func(o *Options) { o.Registerer = nil }, func(o *Options) { o.Routes = nil }, func(o *Options) { o.PollInterval = -1 }, func(o *Options) { o.BatchSize = 51 }, func(o *Options) { o.Routes = Routes{"": {}} }, func(o *Options) { o.Routes = Routes{"t": {"": nil}} }} {
@@ -272,7 +272,7 @@ func TestConfiguration(t *testing.T) {
 	}
 }
 
-func TestReadyRowBeyondLockedPage(t *testing.T) {
+func TestIntegrationReadyRowBeyondLockedPage(t *testing.T) {
 	pool := database(t)
 	ctx := t.Context()
 	lock, err := pool.Acquire(ctx)
@@ -300,7 +300,7 @@ func TestReadyRowBeyondLockedPage(t *testing.T) {
 		t.Fatal("ready row starved")
 	}
 }
-func TestDatabaseErrorsAndLostConnection(t *testing.T) {
+func TestIntegrationDatabaseErrorsAndLostConnection(t *testing.T) {
 	t.Run("dropped table", func(t *testing.T) {
 		pool := database(t)
 		d := dispatcher(t, pool, Routes{"t": {"x": func(context.Context, Event) error { return nil }}}, time.Now)
@@ -365,7 +365,7 @@ func TestDatabaseErrorsAndLostConnection(t *testing.T) {
 	})
 }
 
-func TestCommitNotification(t *testing.T) {
+func TestIntegrationCommitNotification(t *testing.T) {
 	pool := database(t)
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
@@ -391,7 +391,7 @@ func TestCommitNotification(t *testing.T) {
 	}
 }
 
-func TestMetricRegistrationRollback(t *testing.T) {
+func TestIntegrationMetricRegistrationRollback(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	conflict := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "finassist_outbox_oldest_age_seconds", Help: "Age of the oldest pending row by target."}, []string{"target"})
 	if err := registry.Register(conflict); err != nil {
@@ -407,7 +407,7 @@ func TestMetricRegistrationRollback(t *testing.T) {
 	}
 }
 
-func TestFanoutRollbackAfterPartialWork(t *testing.T) {
+func TestIntegrationFanoutRollbackAfterPartialWork(t *testing.T) {
 	for _, failure := range []string{"second target insert", "original delete"} {
 		t.Run(failure, func(t *testing.T) {
 			pool := database(t)
@@ -498,7 +498,7 @@ func assertNoSessionLocks(t *testing.T, pool *pgxpool.Pool) {
 		}
 	}
 }
-func TestSessionLockCleanupForEveryOutcome(t *testing.T) {
+func TestIntegrationSessionLockCleanupForEveryOutcome(t *testing.T) {
 	for _, outcome := range []string{"success", "delivery failure", "cancel", "fanout", "unknown topic"} {
 		t.Run(outcome, func(t *testing.T) {
 			pool := database(t)
@@ -555,7 +555,7 @@ func TestSessionLockCleanupForEveryOutcome(t *testing.T) {
 		})
 	}
 }
-func TestSlowTargetDoesNotBlockHealthyTarget(t *testing.T) {
+func TestIntegrationSlowTargetDoesNotBlockHealthyTarget(t *testing.T) {
 	pool := database(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
@@ -604,7 +604,7 @@ func metricValue(t *testing.T, registry *prometheus.Registry, name, target strin
 	}
 	return 0
 }
-func TestMetricValuesAndUnknownTopicScheduling(t *testing.T) {
+func TestIntegrationMetricValuesAndUnknownTopicScheduling(t *testing.T) {
 	pool := database(t)
 	now := time.Now().Add(time.Hour).Truncate(time.Microsecond)
 	clock := func() time.Time { return now }
@@ -673,7 +673,7 @@ func TestMetricValuesAndUnknownTopicScheduling(t *testing.T) {
 	}
 }
 
-func TestMetricsObserveWhileRecipientBlocked(t *testing.T) {
+func TestIntegrationMetricsObserveWhileRecipientBlocked(t *testing.T) {
 	pool := database(t)
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -717,7 +717,7 @@ func TestMetricsObserveWhileRecipientBlocked(t *testing.T) {
 	}
 }
 
-func TestDispatcherPoolCapacityAndRouteLimits(t *testing.T) {
+func TestIntegrationDispatcherPoolCapacityAndRouteLimits(t *testing.T) {
 	pool, err := pgxpool.New(t.Context(), "postgres://localhost/unused?pool_max_conns=3")
 	if err != nil {
 		t.Fatal(err)
@@ -744,7 +744,7 @@ func TestDispatcherPoolCapacityAndRouteLimits(t *testing.T) {
 	}
 }
 
-func TestEmptyPollReusesSafeConnection(t *testing.T) {
+func TestIntegrationEmptyPollReusesSafeConnection(t *testing.T) {
 	pool := database(t)
 	d := dispatcher(t, pool, Routes{"t": {"x": func(context.Context, Event) error { return nil }}}, time.Now)
 	var before, after uint32
@@ -799,7 +799,7 @@ func (d *Dispatcher) one(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-func TestRunDeliversNewEventsWhileSlowSuccessfulTargetBusy(t *testing.T) {
+func TestIntegrationRunDeliversNewEventsWhileSlowSuccessfulTargetBusy(t *testing.T) {
 	// Exactly targets+3 slots: two RPC lanes, fan-out, LISTEN and observer.
 	pool := database(t, 5)
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
@@ -858,7 +858,7 @@ func TestRunDeliversNewEventsWhileSlowSuccessfulTargetBusy(t *testing.T) {
 	}
 	assertNoSessionLocks(t, pool)
 }
-func TestRunRemovedRoutesDoNotStarveNewFanout(t *testing.T) {
+func TestIntegrationRunRemovedRoutesDoNotStarveNewFanout(t *testing.T) {
 	pool := database(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
 	defer cancel()
@@ -890,7 +890,7 @@ func TestRunRemovedRoutesDoNotStarveNewFanout(t *testing.T) {
 	}
 	assertNoSessionLocks(t, pool)
 }
-func TestPoolCapacityIncludesListenerFanoutAndObserver(t *testing.T) {
+func TestIntegrationPoolCapacityIncludesListenerFanoutAndObserver(t *testing.T) {
 	pool := database(t, 4)
 	options := Options{Pool: pool, Now: time.Now, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Registerer: prometheus.NewRegistry(), Routes: Routes{"t": {"a": func(context.Context, Event) error { return nil }, "b": func(context.Context, Event) error { return nil }}}}
 	if _, err := NewDispatcher(options); err == nil {

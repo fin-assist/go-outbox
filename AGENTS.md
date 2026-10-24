@@ -34,12 +34,12 @@ for itself: what it does, its YouTrack issue, which services use it.
 |---|---|
 | Package documentation: what the library does, what it needs from the service | `doc.go` |
 | Public API of the library | `outbox.go` (transactional publisher), `dispatcher.go` (routes and primary worker), `grpc.go` (system RPC adapter) |
-| Implementation details | `internal/` |
+| Implementation details | `primary.go` (private pool/connection operations), `internal/` |
 | Migration source for the service runner (`Migrations`, `MigrationsName`, `MigrationsTable`) | `migrations.go`, `migrations/` |
 | PostgreSQL for tests, up → down → up check | `internal/pgtest/` (mirrors `migratetest` of the service template) |
 | Integration guide for services | `README.md`, «Внедрение» |
 | Versions, compatibility, releases, Renovate | `docs/releasing.md`, `CHANGELOG.md`, `.github/workflows/release.yml`, `renovate.json` |
-| Coverage of changed lines, changelog checks | `scripts/` |
+| Suite execution/profile guards and native coverage policy, changelog checks | `scripts/` |
 | CI, lint | `.github/workflows/ci.yml`, `.golangci.yml`, `.squawk.toml`, `Makefile` |
 | PR review by Claude | `.github/workflows/claude.yml` |
 
@@ -146,24 +146,32 @@ Also:
   connections, two goroutines released together, a transaction rolled back mid-way; no sleeps for synchronisation —
   wait on a channel or a condition with a deadline. Run with `-race`.
 - Tests assert behaviour; a test that only executes lines or asserts on a fake it set up itself is not coverage.
-- The measurable check is coverage of changed lines: at least 80 % of changed executable lines of production code
-  (`make cover`; CI posts the table in the PR). Uncovered changed lines are listed in the PR («Как проверено») with
-  the reason; an uncovered line without a reason is a review finding.
+- FIN-243 requires at least 80% of Go statements independently in unit, integration and consumer API suites.
+  All three use `-coverpkg=./...`, with the same complete denominator and no file/package exclusions.
+  `go-test-coverage/v2` v2.20.1 enforces total80; its rounding accepts 79.95% as 80.0%.
+  Combined coverage is an informational union, never a substitute for any individual gate.
+- Name tests/fuzz targets `TestUnit...`/`FuzzUnit...`, `TestIntegration...`/`FuzzIntegration...` or
+  `TestAPI...`/`FuzzAPI...`. Executable public Go examples belong to API. A race-enabled inventory runs before
+  every collection and rejects unclassified tests. Existing compile-only examples remain compile-only.
+- Unit tests have no database or network. Integration exercises real dependencies. API tests exercise public Go
+  entry points as a service consumer; stateful API tests use real PostgreSQL in caller-owned transactions.
+- Empty suites, skipped or failed actual tests, and missing/empty/header-only profiles fail. Missing PostgreSQL
+  fails in CI. The small JSON/grep guard validates execution and profile inputs; it calculates no coverage.
 
 ## Checks
 
-CI (table in `README.md`): `go mod tidy` clean, `go vet`, `go test -race` with PostgreSQL 18 in Docker and coverage
-of changed lines, script tests and the `CHANGELOG.md` format, golangci-lint, `gorelease` against the latest tag, and
-on PRs the migration checks (existing files unchanged, squawk on new ones). Run `make test` (or `make cover`),
-`make lint` and `make api` before pushing.
+Run `make test` (or `make cover`), `make lint` and `make api` before pushing. The existing `go` CI job retains
+module tidiness, vet, script and changelog checks, then independently collects and checks all three suites.
+Each collection/check outcome must succeed. `api` remains the gorelease compatibility check, distinct from API tests.
+Existing migration, lint, release and Renovate checks retain their purpose.
 
-### Coverage reports (FIN-210)
+### Coverage reports (FIN-243)
 
-CI reports project totals and changed executable lines together from the same profile of the root Go module in one
-updated PR comment and the run summary; push runs retain project totals. The 80% target remains for changed
-lines only. Count unique lines in blocks with nonzero statement counts, including generated production code;
-exclude `_test.go` and `testdata/`. An empty profile means no data, never 100%. Fork PRs cannot post comments.
-Test changes to the report with `python3 -m unittest discover -s scripts -p 'test_coverage_diff.py'`.
+`make cover-unit`, `make cover-integration` and `make cover-api` collect fresh `*.out` and `*.jsonl` files and enforce
+their respective threshold. `make cover` runs all three gates. `make cover-combined` uses the tool's built-in comma
+profile union. CI saves profiles, execution JSON, native breakdowns and reports as artifacts and publishes a run
+summary. There is no PR-writing token or custom coverage parser/calculator. Run script regressions with
+`python3 -m unittest discover -s scripts -p 'test_*.py'`.
 
 ## Workflow
 
@@ -191,7 +199,7 @@ Test changes to the report with `python3 -m unittest discover -s scripts -p 'tes
   - `@codex` — the Codex GitHub integration under the owner's ChatGPT subscription. Its model is chosen by OpenAI
     and cannot be pinned from here; a pinned model would need the OpenAI API with per-token billing, which was
     declined (FIN-103).
-  - A review is requested only once `.github/workflows/claude.yml` is on `main`: comment-triggered workflows run
+  - Claude review is requested once `.github/workflows/claude.yml` is on `main`; Codex is requested independently when its integration is available. Comment-triggered Claude workflows run
     from the default branch.
   - Replies in threads and other comments never mention `@codex` or `@claude`: any mention with text starts them
     again.
@@ -219,7 +227,7 @@ updates the library.
   mandatory rules, then performance; a performance finding needs a measurement or an evident cost, not a guess.
 - Post each finding as an inline comment on the changed line. The summary lists what was checked, with a
   «Безопасность», a «Тесты» and a «Совместимость» part; «not affected» is a valid answer, with one line why.
-- Check that the PR references its YouTrack issue, adds its `CHANGELOG.md` line when it changes API or behaviour,
+- Check that the PR references its YouTrack issue, adds its `CHANGELOG.md` line (including CI-only changes),
   and updates `README.md` («Внедрение»), this file and `docs/` when it changes what they describe.
 
 ### Security
@@ -288,7 +296,7 @@ identifier, behaviour, migration and dependency check:
   existing file changed.
 - A new metric is `finassist_<library>_…` with bounded labels and is listed in the README.
 - No logger, registry, clock or setting is taken from process-wide state.
-- Changed lines the coverage comment of the PR shows as uncovered have a reason in the PR.
+- Each suite independently meets total80; any deficit is reported explicitly with reachable scenario gaps.
 
 ## Renovate automation
 

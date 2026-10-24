@@ -63,7 +63,7 @@ func (s *settingsServer) SetUserTimezone(ctx context.Context, r *settings.SetUse
 	}
 	return &settings.SetUserTimezoneResponse{}, nil
 }
-func TestServiceUsage(t *testing.T) {
+func TestIntegrationServiceUsage(t *testing.T) {
 	pool := database(t)
 	auth, err := identity.NewServer(identity.AccessTable{settings.UserSettingsSyncService_SetUserTimezone_FullMethodName: {"user": identity.System}}, serviceChecker{}, userChecker{}, nil)
 	if err != nil {

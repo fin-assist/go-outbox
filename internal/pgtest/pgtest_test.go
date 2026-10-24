@@ -15,7 +15,7 @@ import (
 
 func file(s string) *fstest.MapFile { return &fstest.MapFile{Data: []byte(s)} }
 
-func TestValidate(t *testing.T) {
+func TestUnitValidate(t *testing.T) {
 	cases := []struct {
 		name  string
 		files fstest.MapFS
@@ -60,13 +60,13 @@ type unreadable struct{}
 
 func (unreadable) Open(string) (fs.File, error) { return nil, errors.New("disk on fire") }
 
-func TestValidateReportsAnUnreadableSource(t *testing.T) {
+func TestUnitValidateReportsAnUnreadableSource(t *testing.T) {
 	if err := Validate(unreadable{}); err == nil || !strings.Contains(err.Error(), "disk on fire") {
 		t.Fatalf("error %v, want the read error", err)
 	}
 }
 
-func TestDSNGivesAnEmptyDatabaseOfItsOwn(t *testing.T) {
+func TestIntegrationDSNGivesAnEmptyDatabaseOfItsOwn(t *testing.T) {
 	a, b := DSN(t), DSN(t)
 	if a == b {
 		t.Fatal("two calls returned the same database")
@@ -86,7 +86,7 @@ func TestDSNGivesAnEmptyDatabaseOfItsOwn(t *testing.T) {
 	}
 }
 
-func TestCheckUpDownUpPasses(t *testing.T) {
+func TestIntegrationCheckUpDownUpPasses(t *testing.T) {
 	files := fstest.MapFS{
 		"000001_create_a.up.sql":   file("CREATE TABLE a (id bigint PRIMARY KEY)"),
 		"000001_create_a.down.sql": file("DROP TABLE a"),
@@ -97,7 +97,7 @@ func TestCheckUpDownUpPasses(t *testing.T) {
 	CheckUpDownUp(t, "lib_schema_migrations", files)
 }
 
-func TestCheckUpDownUpCatchesBadMigrations(t *testing.T) {
+func TestIntegrationCheckUpDownUpCatchesBadMigrations(t *testing.T) {
 	cases := []struct {
 		name  string
 		files fstest.MapFS
