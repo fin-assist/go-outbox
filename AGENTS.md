@@ -99,11 +99,13 @@ The same priorities and rules as the services (`AGENTS.md` of `fin-assist/go-ser
   `errdetails.ErrorInfo` are forbidden by the linter; an internal refusal is a bare code built in one function with
   a nolint and its reason. Errors the service handles are exported sentinel values or types, checked with
   `errors.Is` / `errors.As`, and listed in the doc comment.
-- **SQL construction:** use [Squirrel](https://github.com/Masterminds/squirrel)
-  (`github.com/Masterminds/squirrel`) instead of assembling SQL by concatenating Go strings wherever the builder
-  supports the query. This is an approved exception to "standard library first". Pass values as query arguments,
-  use `PlaceholderFormat(sq.Dollar)` for PostgreSQL, and keep table and column names constant. If the builder
-  cannot express the query, explain the limitation next to the manual SQL construction and keep it parameterized.
+- **SQL construction:** write fixed-structure queries as plain SQL with parameters (`$1`, `$2`, … for
+  PostgreSQL). Use [Squirrel](https://github.com/Masterminds/squirrel) (`github.com/Masterminds/squirrel`) only
+  when assembling a query dynamically, such as optional predicates or varying column lists. Changing argument
+  values alone does not make a query dynamic. This limited use is an approved exception to "standard library
+  first". Parameterize values; keep identifiers and structural fragments constant or from an explicit allowlist.
+  Use `PlaceholderFormat(sq.Dollar)` for PostgreSQL builders. If a dynamic query cannot be expressed by the
+  builder, explain the limitation beside its manual construction and preserve parameterization.
 - Database: SQL with parameters only (`$1`), table and column names are constants; tables are named
   `<library>_<name>` so they never collide with a service's. Migrations follow `docs/migrations.md` of the service
   template; a released migration never changes (`docs/releasing.md`, «Миграции»).
