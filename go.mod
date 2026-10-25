@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/fin-assist/contracts/gen/go v0.4.0
 	github.com/fin-assist/go-identity v0.1.0
-	github.com/fin-assist/go-postgres v0.1.2
+	github.com/fin-assist/go-postgres v0.2.0
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/prometheus/client_golang v1.23.2
