@@ -49,7 +49,7 @@ func connection(t *testing.T, check func(context.Context, *health.HealthCheckReq
 }
 func request() proto.Message  { return &health.HealthCheckRequest{} }
 func response() proto.Message { return &health.HealthCheckResponse{} }
-func TestGRPCDelivery(t *testing.T) {
+func TestIntegrationGRPCDelivery(t *testing.T) {
 	calls := 0
 	conn := connection(t, func(ctx context.Context, r *health.HealthCheckRequest) (*health.HealthCheckResponse, error) {
 		calls++

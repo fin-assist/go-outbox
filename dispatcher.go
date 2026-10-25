@@ -48,6 +48,7 @@ type Options struct {
 // It starts no goroutines until Run is called and uses only the supplied primary pool.
 type Dispatcher struct {
 	options     Options
+	pool        primaryPool
 	running     atomic.Bool
 	count, age  *prometheus.GaugeVec
 	failures    *prometheus.CounterVec
@@ -88,7 +89,7 @@ func NewDispatcher(o Options) (*Dispatcher, error) {
 		return nil, errors.New("outbox: too many targets or insufficient pool capacity")
 	}
 	o.Routes = routes
-	d := &Dispatcher{options: o, count: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "finassist_outbox_rows", Help: "Pending rows by configured target; unexpanded events use the empty target."}, []string{"target"}), age: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "finassist_outbox_oldest_age_seconds", Help: "Age of the oldest pending row by target."}, []string{"target"}), failures: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "finassist_outbox_delivery_errors_total", Help: "Failed deliveries by configured target."}, []string{"target"})}
+	d := &Dispatcher{options: o, pool: poolAdapter{o.Pool}, count: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "finassist_outbox_rows", Help: "Pending rows by configured target; unexpanded events use the empty target."}, []string{"target"}), age: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "finassist_outbox_oldest_age_seconds", Help: "Age of the oldest pending row by target."}, []string{"target"}), failures: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "finassist_outbox_delivery_errors_total", Help: "Failed deliveries by configured target."}, []string{"target"})}
 	collectors := []prometheus.Collector{d.count, d.age, d.failures}
 	for i, c := range collectors {
 		if err := o.Registerer.Register(c); err != nil {
@@ -168,16 +169,15 @@ func (d *Dispatcher) targetLoop(ctx context.Context, target string, wake <-chan 
 	}
 }
 func (d *Dispatcher) wait(ctx context.Context, onWork func()) {
-	c, err := d.options.Pool.Acquire(ctx)
+	c, err := d.pool.Acquire(ctx)
 	if err != nil {
 		d.pause(ctx)
 		return
 	}
 	defer func() {
-		raw := c.Hijack()
 		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = raw.Close(closeCtx)
+		_ = c.closeDetached(closeCtx)
 	}()
 	if _, err = c.Exec(ctx, `LISTEN finassist_outbox`); err != nil {
 		d.pause(ctx)
@@ -189,7 +189,7 @@ func (d *Dispatcher) wait(ctx context.Context, onWork func()) {
 	}
 	wait, cancel := context.WithTimeout(ctx, d.options.PollInterval)
 	defer cancel()
-	_, _ = c.Conn().WaitForNotification(wait)
+	_ = c.waitForNotification(wait)
 }
 
 var errRetryScheduled = errors.New("outbox: delivery retry scheduled")
@@ -238,7 +238,7 @@ type row struct {
 }
 
 func (d *Dispatcher) oneFor(ctx context.Context, targetFilter string) (bool, error) {
-	c, err := d.options.Pool.Acquire(ctx)
+	c, err := d.pool.Acquire(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -249,10 +249,9 @@ func (d *Dispatcher) oneFor(ctx context.Context, targetFilter string) (bool, err
 			c.Release()
 			return
 		}
-		raw := c.Hijack()
 		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = raw.Close(closeCtx)
+		_ = c.closeDetached(closeCtx)
 	}()
 	return d.dispatch(ctx, c, targetFilter, &lockMayExist)
 }
@@ -404,7 +403,7 @@ func (d *Dispatcher) label(target string) string {
 func (d *Dispatcher) observe(ctx context.Context) error {
 	d.observation.Lock()
 	defer d.observation.Unlock()
-	rows, err := d.options.Pool.Query(ctx, `SELECT target,count(*),min(created_at) FROM outbox_events GROUP BY target`)
+	rows, err := d.pool.Query(ctx, `SELECT target,count(*),min(created_at) FROM outbox_events GROUP BY target`)
 	if err != nil {
 		return err
 	}

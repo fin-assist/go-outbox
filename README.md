@@ -19,7 +19,7 @@ doc.go               package documentation: what the library does and what it ne
 migrations.go        Migrations, MigrationsName, MigrationsTable for the service's migration runner
 migrations/          SQL migrations of the library, embedded (NNN_name.up.sql / .down.sql)
 internal/pgtest/     PostgreSQL for tests and the up -> down -> up check, same rules as the service runner
-scripts/             coverage of changed lines, CHANGELOG checks (Python, standard library)
+scripts/             coverage execution guards and regressions, CHANGELOG checks (Python, standard library)
 docs/releasing.md    versions and releases
 ```
 
@@ -159,7 +159,7 @@ CI (`.github/workflows/ci.yml`):
 
 | Job | Что |
 |---|---|
-| `go` | `go mod tidy` без изменений, `go vet`, `go test -race` с PostgreSQL 18 в Docker (testcontainers), включая «вверх → вниз → вверх» для миграций; тесты скриптов; формат `CHANGELOG.md`; общее покрытие и покрытие изменённых строк — в сводке прогона и комментарием в PR |
+| `go` | `go mod tidy` без изменений, `go vet`, `go test -race` с PostgreSQL 18 в Docker (testcontainers), включая «вверх → вниз → вверх» для миграций; тесты скриптов; формат `CHANGELOG.md`; три независимых порога statements ≥80%, сводка и artifacts |
 | `lint` | golangci-lint (`.golangci.yml`): `forbidigo` против обхода `finerr` и против глобальных логгера, реестра метрик и переменных окружения; `depguard` против фреймворков |
 | `api` | `gorelease`: изменения экспортируемого API против последнего тега и предлагаемая версия; на PR выпуска — проверка номера из `CHANGELOG.md` |
 | `migrations` (PR) | существующие миграции не изменены, squawk по новым; ширина integer выбирается по диапазону домена (FIN-214) |
@@ -171,15 +171,29 @@ CI (`.github/workflows/ci.yml`):
 ```bash
 make test          # Docker for testcontainers, or TEST_DATABASE_URL=postgres://... to use your PostgreSQL
 make lint
-make cover         # cover.out and the table of changed lines against origin/main
+make cover         # independent unit/integration/API statements gates
 make api           # API changes against the latest tag
 make release-check VERSION=v0.2.0
 ```
 
-Цель покрытия — не ниже **80 %** изменённых исполняемых строк production-кода; CI не падает, порог проверяется на ревью (AGENTS.md, Tests). Модули `github.com/fin-assist/*` берутся из git, минуя прокси (`GOPRIVATE`, задан в `Makefile` и CI).
+### Покрытие statements (FIN-243)
 
-### Общее покрытие и изменённые строки
+`go-test-coverage/v2` закреплён на v2.20.1. Unit, integration и consumer API должны **каждый** покрывать не менее
+80% statements production-пакетов, с одним знаменателем для всех трёх наборов. Список `-coverpkg` берётся из
+`go list -race ./...`; по явному решению владельца FIN-243 исключается только точный пакет `<module>/internal/pgtest`.
+Вложенные и похожие по имени пакеты остаются включены; других исключений файлов или пакетов нет.
+Пустой список инструментирования приводит к ошибке. Все тесты по-прежнему запускаются через `./...`, включая harness.
+Округление инструмента принимает 79,95% как 80,0%. Generated production-код и остальные helpers в обычных `.go` вне исключённого пакета входят в расчёт.
+Combined — дополнительный union через штатный comma-profile инструмента; он не заменяет отдельные пороги.
 
-CI публикует разделы «Покрытие проекта» и «Покрытие изменённых строк» в сводке запуска и одном обновляемом комментарии PR. Оба раздела используют один профиль корневого Go-модуля, без повторного запуска тестов; на push сохраняется общее покрытие. Комментарий для PR из fork не записывается. При ошибке построения или пустом файле отчёта последний корректный комментарий сохраняется.
+`make cover-unit`, `make cover-integration`, `make cover-api` собирают свежие профили и JSON-логи с `-race` и
+ограничением времени, затем проверяют порог. `make cover` выполняет все три проверки. Инвентаризация с `-race`
+отклоняет тесты без префикса уровня. Unit не используют сеть/БД; integration работают с настоящими зависимостями;
+API проверяют публичный Go API со стороны потребителя, а stateful-сценарии — с реальной БД в транзакции потребителя.
+Исполняемые `Example…` входят в API; примеры без Output остаются проверкой компиляции.
 
-Метрика — уникальные строки внутри блоков Go-профиля с ненулевым числом statements, а не процент statements из `go tool cover`. `_test.go` и `testdata/` исключены; сгенерированный production-код включён на тех же условиях. Повторные блоки разных тестовых бинарей объединяются: достаточно одного выполнения. Без исполняемых строк отчёт сообщает «Нет данных», а не 100 %. Цель **80 %** относится только к изменённым строкам и проверяется на ревью; общий процент её не заменяет.
+Пустой suite, skip/fail фактического теста и отсутствующий/пустой/header-only профиль — ошибка. Недоступный PostgreSQL
+в CI также приводит к ошибке. Обязательный job `go` требует успеха всех шести collection/check шагов. Профили
+`unit.out`, `integration.out`, `api.out`, JSON-логи и штатные отчёты сохраняются в artifacts, результаты — в сводке CI.
+Совместимость Go API отдельно проверяет прежний job `api` (`gorelease`). Собственного расчёта процентов и комментария
+в PR больше нет. Порог дополняет ревью полноты сценариев; недостигнутые критерии указываются явно.

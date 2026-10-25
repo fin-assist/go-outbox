@@ -34,7 +34,7 @@ func (t *transaction) Exec(_ context.Context, _ string, args ...any) (pgconn.Com
 type provider struct{ tx pgx.Tx }
 
 func (p provider) Tx(context.Context) (pgx.Tx, bool) { return p.tx, p.tx != nil }
-func TestPublish(t *testing.T) {
+func TestUnitPublish(t *testing.T) {
 	if _, err := NewPublisher(nil, time.Now); err == nil {
 		t.Fatal("nil provider accepted")
 	}
@@ -68,7 +68,7 @@ func TestPublish(t *testing.T) {
 		}
 	}
 }
-func TestBackoff(t *testing.T) {
+func TestUnitBackoff(t *testing.T) {
 	last := time.Duration(0)
 	for i := 0; i < 40; i++ {
 		for _, j := range []float64{0, 0.5, 0.999999} {
@@ -88,7 +88,7 @@ func TestBackoff(t *testing.T) {
 	}
 }
 
-func TestPublishErrorClassifications(t *testing.T) {
+func TestUnitPublishErrorClassifications(t *testing.T) {
 	for _, original := range []error{context.Canceled, context.DeadlineExceeded, &pgconn.PgError{Code: "40001", Message: "secret SQL", Detail: "secret user", InternalQuery: "secret query"}, &pgconn.PgError{Code: "40P01", Message: "secret SQL"}} {
 		tx := &transaction{fail: 1, cause: original}
 		p, _ := NewPublisher(provider{tx}, time.Now)

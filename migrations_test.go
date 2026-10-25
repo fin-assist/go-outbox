@@ -7,7 +7,7 @@ import (
 	"github.com/fin-assist/go-outbox/internal/pgtest"
 )
 
-func TestMigrationsAreValid(t *testing.T) {
+func TestUnitMigrationsAreValid(t *testing.T) {
 	if err := pgtest.Validate(Migrations); err != nil {
 		t.Fatal(err)
 	}
@@ -18,7 +18,7 @@ func TestMigrationsAreValid(t *testing.T) {
 
 // Every migration of the library applies, rolls back and applies again on an empty
 // database, as the service's migration runner would run it.
-func TestMigrationsUpDownUp(t *testing.T) {
+func TestIntegrationMigrationsUpDownUp(t *testing.T) {
 	if !hasMigrations(t) {
 		t.Skip("the library has no migrations yet")
 	}

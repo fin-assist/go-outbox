@@ -18,14 +18,10 @@ env:
 jobs:
   go:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write # the coverage comment
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
         with:
-          # Full history: coverage of changed lines diffs the PR against its base branch.
-          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@v7
         with:
@@ -38,65 +34,89 @@ jobs:
             git config --global url."https://x-access-token:${TOKEN}@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"
           fi
       - name: go.mod is tidy
-        run: |
-          go mod tidy
-          git diff --exit-code -- go.mod go.sum || { echo "Run go mod tidy and commit the result."; exit 1; }
+        run: go mod tidy -diff
       - name: Vet
         run: go vet ./...
-      # Integration tests start PostgreSQL in Docker (testcontainers); with CI set they fail
-      # instead of skipping when no database is available. They include the up -> down -> up
-      # check of the library's migrations (migrations_test.go).
-      - name: Test
-        run: go test -race -count=1 -coverpkg=./... -coverprofile=cover.out ./...
+      - name: Test names cover all selectors
+        run: make test-names
       - name: Test the scripts
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: CHANGELOG.md format
         run: python3 scripts/changelog.py check
-
-      # Informational: the 80 % target for changed lines is checked in review (AGENTS.md, Tests);
-      # nothing fails on a low value or a failed script. The branch name goes through env.
-      - name: Project and changed-line coverage
-        id: coverage
-        if: github.event_name == 'pull_request'
+      - name: Collect unit statements coverage
+        id: collect_unit
         continue-on-error: true
-        env:
-          BASE_REF: ${{ github.base_ref }}
+        run: make collect-unit
+      - name: Require 80 percent unit statements coverage
+        id: check_unit
+        if: always() && steps.collect_unit.outcome == 'success'
+        continue-on-error: true
+        run: make check-unit
+      - name: Collect integration statements coverage
+        id: collect_integration
+        continue-on-error: true
+        run: make collect-integration
+      - name: Require 80 percent integration statements coverage
+        id: check_integration
+        if: always() && steps.collect_integration.outcome == 'success'
+        continue-on-error: true
+        run: make check-integration
+      - name: Collect api statements coverage
+        id: collect_api
+        continue-on-error: true
+        run: make collect-api
+      - name: Require 80 percent api statements coverage
+        id: check_api
+        if: always() && steps.collect_api.outcome == 'success'
+        continue-on-error: true
+        run: make check-api
+      - name: Combined statements coverage (informational union)
+        if: always() && steps.collect_unit.outcome == 'success' && steps.collect_integration.outcome == 'success' && steps.collect_api.outcome == 'success'
+        run: make cover-combined
+      - name: Coverage summary
+        if: always()
         run: |
-          rm -f coverage.md
-          python3 scripts/coverage-diff.py --base "origin/$BASE_REF" --summary "$GITHUB_STEP_SUMMARY" > coverage.md
-      - name: Coverage of the project
-        if: github.event_name != 'pull_request'
-        continue-on-error: true
-        run: python3 scripts/coverage-diff.py --summary "$GITHUB_STEP_SUMMARY"
-
-      # One comment per PR, found by its marker and edited on every push. PRs from forks get a
-      # read-only token, so they are skipped; a failed post never fails the build.
-      - name: Coverage comment on the PR
-        shell: bash # fail a lookup pipeline instead of creating a duplicate comment
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.coverage.outcome == 'success'
-        continue-on-error: true
+          for level in unit integration api combined; do
+            echo "## $level coverage (Go statements)" >> "$GITHUB_STEP_SUMMARY"
+            if [ -s "$level.report.txt" ]; then
+              echo '```text' >> "$GITHUB_STEP_SUMMARY"
+              cat "$level.report.txt" >> "$GITHUB_STEP_SUMMARY"
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo 'Coverage unavailable: suite collection or input validation failed.' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          echo 'Each suite requires total80 independently, with go-test-coverage v2.20.1 rounding. Combined is informational.' >> "$GITHUB_STEP_SUMMARY"
+          echo "[Coverage artifacts]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID#artifacts)" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: |
+            unit.out
+            integration.out
+            api.out
+            *.jsonl
+            *.coverage.txt
+            *.report.txt
+          if-no-files-found: error
+      # Keep the existing required status check: low coverage cannot hide behind a green go job.
+      - name: Require all three suites and thresholds
+        if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COLLECT_UNIT: ${{ steps.collect_unit.outcome }}
+          CHECK_UNIT: ${{ steps.check_unit.outcome }}
+          COLLECT_INTEGRATION: ${{ steps.collect_integration.outcome }}
+          CHECK_INTEGRATION: ${{ steps.check_integration.outcome }}
+          COLLECT_API: ${{ steps.collect_api.outcome }}
+          CHECK_API: ${{ steps.check_api.outcome }}
         run: |
-          test -s coverage.md || exit 0
-          marker='<!-- coverage-report (ci.yml) -->'
-          {
-            echo "$marker"
-            cat coverage.md
-            echo
-            echo "<sub>Commit ${HEAD_SHA::7} · [CI run]($RUN_URL) · цель 80 % изменённых строк, AGENTS.md (Tests)</sub>"
-          } > comment.md
-          id=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate \
-            | jq -rs --arg m "$marker" \
-              '[.[][] | select(.user.login == "github-actions[bot]" and (.body | startswith($m)))][0].id // empty')
-          if [ -n "$id" ]; then
-            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$id" -F body=@comment.md > /dev/null
-          else
-            gh api "repos/${{ github.repository }}/issues/$PR/comments" -F body=@comment.md > /dev/null
-          fi
+          for outcome in "$COLLECT_UNIT" "$CHECK_UNIT" "$COLLECT_INTEGRATION" "$CHECK_INTEGRATION" "$COLLECT_API" "$CHECK_API"; do
+            if [ "$outcome" != success ]; then
+              echo 'Every suite must execute without skips and independently meet total80.' >&2
+              exit 1
+            fi
+          done
 
   lint:
     runs-on: ubuntu-latest
