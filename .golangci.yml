@@ -34,20 +34,18 @@ linters:
         # A custom forbid list replaces forbidigo's default one: keep its print rules.
         - pattern: ^(fmt\.Print(|f|ln)|print|println)$
           msg: take a *slog.Logger from the service
-        # A library never reaches for process-wide state: the service passes the logger, the
-        # metrics registry, the HTTP client and the settings in (AGENTS.md, «Writing code»).
+        # The core of «No process-wide state» (AGENTS.md, «Writing code»): the global logger, metrics
+        # registry, HTTP client and server, OpenTelemetry providers, the environment and the process.
+        # Owner decision (FIN-322): lint checks only this core; the principle as a whole is checked in review.
         # scripts/test_lint_policy.py runs this linter on a probe of every forbidden and allowed form.
-        - pattern: ^slog\.(Default|SetDefault|SetLogLoggerLevel|Debug|DebugContext|Info|InfoContext|Warn|WarnContext|Error|ErrorContext|Log|LogAttrs)$
+        # slog.With is slog.Default().With: it also reaches the process logger.
+        - pattern: ^slog\.(Default|SetDefault|With|SetLogLoggerLevel|Debug|DebugContext|Info|InfoContext|Warn|WarnContext|Error|ErrorContext|Log|LogAttrs)$
           pkg: ^log/slog$
           msg: take a *slog.Logger from the service
         - pattern: ^log\.(Print|Printf|Println|Fatal|Fatalf|Fatalln|Panic|Panicf|Panicln|Default|Writer|SetOutput|SetFlags|SetPrefix|Flags|Prefix|Output)$
           pkg: ^log$
           msg: take a *slog.Logger from the service
-        # Only the functions that write to or replace the global logger: types and NewLoggerV2* stay allowed.
-        - pattern: ^grpclog\.(Info|Infof|Infoln|InfoDepth|Warning|Warningf|Warningln|WarningDepth|Error|Errorf|Errorln|ErrorDepth|Fatal|Fatalf|Fatalln|FatalDepth|Print|Printf|Println|V|Component|SetLogger|SetLoggerV2)$
-          pkg: ^google\.golang\.org/grpc/grpclog$
-          msg: take a *slog.Logger from the service
-        - pattern: ^prometheus\.(MustRegister|Register|Unregister|DefaultRegisterer|DefaultGatherer)$
+        - pattern: ^prometheus\.(MustRegister|Register|DefaultRegisterer|DefaultGatherer)$
           pkg: ^github\.com/prometheus/client_golang/prometheus$
           msg: register metrics on the prometheus.Registerer the service passes in
         - pattern: ^promauto\.New.+$
@@ -56,100 +54,36 @@ linters:
         - pattern: ^promhttp\.Handler$
           pkg: ^github\.com/prometheus/client_golang/prometheus/promhttp$
           msg: serve the registry the service passes in (promhttp.HandlerFor)
-        # ProxyFromEnvironment reads the proxy variables once and caches them for the whole process.
-        - pattern: ^http\.(DefaultClient|DefaultTransport|DefaultServeMux|Handle|HandleFunc|Get|Head|Post|PostForm|ListenAndServe|ListenAndServeTLS|Serve|ServeTLS|ProxyFromEnvironment)$
+        - pattern: ^http\.(DefaultClient|Get|Head|Post|Handle|HandleFunc|ListenAndServe|ListenAndServeTLS)$
           pkg: ^net/http$
-          msg: take the *http.Client, its Transport or the handler from the service
-        # Reads HTTP_PROXY/HTTPS_PROXY/NO_PROXY like http.ProxyFromEnvironment.
-        - pattern: ^httpproxy\.FromEnvironment$
-          pkg: ^golang\.org/x/net/http/httpproxy$
-          msg: take the proxy configuration (or the *http.Client) from the service
-        # grpc-go keeps process-wide registries of codecs, compressors, resolvers and balancers; a library
-        # passes its choice per connection or call (grpc.WithResolvers, grpc.ForceCodecV2, ...).
-        - pattern: ^encoding\.(RegisterCodec|RegisterCodecV2|RegisterCompressor)$
-          pkg: ^google\.golang\.org/grpc/encoding$
-          msg: process-wide gRPC registry; pass the codec or compressor per connection or call
-        - pattern: ^resolver\.(Register|SetDefaultScheme)$
-          pkg: ^google\.golang\.org/grpc/resolver$
-          msg: process-wide gRPC registry; pass the resolver with grpc.WithResolvers
-        - pattern: ^balancer\.Register$
-          pkg: ^google\.golang\.org/grpc/balancer$
-          msg: process-wide gRPC registry; the service registers balancers
-        - pattern: ^binarylog\.SetSink$
-          pkg: ^google\.golang\.org/grpc/binarylog$
-          msg: process-wide gRPC binary log sink; the service configures it
-        # Changes the level of the globally registered gzip compressor.
-        - pattern: ^gzip\.SetLevel$
-          pkg: ^google\.golang\.org/grpc/encoding/gzip$
-          msg: process-wide gRPC compressor setting; the service configures it
-        - pattern: ^grpc\.EnableTracing$
-          pkg: ^google\.golang\.org/grpc$
-          msg: process-wide gRPC switch; tracing is the service's decision
-        - pattern: ^otel\.(Get.+|Set.+|Tracer|Meter|Handle)$
+          msg: take the *http.Client or the handler from the service
+        - pattern: ^otel\.(Get.+|Set.+)$
           pkg: ^go\.opentelemetry\.io/otel$
           msg: take the provider from the service
-        - pattern: ^global\.(GetLoggerProvider|SetLoggerProvider|Logger)$
-          pkg: ^go\.opentelemetry\.io/otel/log/global$
-          msg: take the provider from the service
+        - pattern: ^os\.(Getenv|LookupEnv|Environ|ExpandEnv|Setenv|Unsetenv|Clearenv|Args)$
+          pkg: ^os$
+          msg: a library takes its settings from the service, not from the environment
+        - pattern: ^os\.Exit$
+          pkg: ^os$
+          msg: return an error; exiting the process is the service's decision
         - pattern: ^signal\.(Notify|NotifyContext|Ignore|Reset|Stop)$
           pkg: ^os/signal$
           msg: signal handling belongs to the service's main
-        - pattern: ^os\.(Getenv|LookupEnv|Environ|ExpandEnv|Setenv|Unsetenv|Clearenv|Args|UserHomeDir|UserConfigDir|UserCacheDir)$
-          pkg: ^os$
-          msg: a library takes its settings from the service, not from the environment
-        # Owner decision (FIN-294): flags, standard streams, the temp directory, runtime tuning and the
-        # working directory belong to the service; a library takes them as parameters.
         - pattern: ^flag\.(Arg|Args|Bool|BoolFunc|BoolVar|CommandLine|Duration|DurationVar|Float64|Float64Var|Func|Int|Int64|Int64Var|IntVar|Lookup|NArg|NFlag|Parse|Parsed|PrintDefaults|Set|String|StringVar|TextVar|Uint|Uint64|Uint64Var|UintVar|Usage|Var|Visit|VisitAll)$
           pkg: ^flag$
           msg: the service parses flags; take a *flag.FlagSet (flag.NewFlagSet) or the values
         - pattern: ^os\.(Stdout|Stderr|Stdin)$
           pkg: ^os$
           msg: take an io.Writer / io.Reader or a *slog.Logger from the service
-        - pattern: ^os\.(TempDir|CreateTemp|MkdirTemp)$
-          pkg: ^os$
-          msg: take the directory from the service; lint cannot tell an empty dir from a passed one (AGENTS.md)
-        # (*os.File).Chdir matches as os.File.Chdir with analyze-types.
-        - pattern: ^os\.(Chdir|File\.Chdir)$
+        - pattern: ^os\.Chdir$
           pkg: ^os$
           msg: the working directory is process-wide; use paths relative to a directory the service passes
         - pattern: ^debug\.Set.+$
           pkg: ^runtime/debug$
           msg: runtime tuning is process-wide and belongs to the service's main
-        - pattern: ^runtime\.(GOMAXPROCS|SetDefaultGOMAXPROCS)$
+        - pattern: ^runtime\.GOMAXPROCS$
           pkg: ^runtime$
           msg: take the pool size from the service's options; a read-only GOMAXPROCS(0) default needs nolint with the reason (AGENTS.md)
-        # The working directory, the root and the DLL search path are process-wide.
-        - pattern: ^syscall\.(Chdir|Fchdir|Chroot|SetCurrentDirectory)$
-          pkg: ^syscall$
-          msg: the working directory and the root are process-wide; use paths relative to a directory the service passes
-        - pattern: ^(unix|windows)\.(Chdir|Fchdir|Chroot|SetCurrentDirectory|SetDllDirectory|SetDefaultDllDirectories)$
-          pkg: ^golang\.org/x/sys/(unix|windows)$
-          msg: the working directory, the root and the DLL search path are process-wide; use paths the service passes
-        # The file mode creation mask and the resource limits are process-wide, like the working directory (unix only).
-        - pattern: ^syscall\.(Umask|Setrlimit)$
-          pkg: ^syscall$
-          msg: the umask and resource limits are process-wide; set file modes explicitly, limits belong to the service's main
-        - pattern: ^unix\.(Umask|Setrlimit|Prlimit)$
-          pkg: ^golang\.org/x/sys/unix$
-          msg: the umask and resource limits are process-wide; set file modes explicitly, limits belong to the service's main
-        # The same standard streams, temp directory and command line as os.Stdout, os.TempDir and os.Args.
-        - pattern: ^syscall\.(Stdin|Stdout|Stderr|GetStdHandle|GetTempPath|GetCommandLine|CommandLineToArgv)$
-          pkg: ^syscall$
-          msg: take an io.Writer / io.Reader, the directory or the arguments from the service
-        - pattern: ^(unix|windows)\.(Stdin|Stdout|Stderr|GetStdHandle|SetStdHandle|GetTempPath|GetCommandLine|CommandLineToArgv)$
-          pkg: ^golang\.org/x/sys/(unix|windows)$
-          msg: take an io.Writer / io.Reader, the directory or the arguments from the service
-        - pattern: ^syscall\.(Getenv|Environ|Setenv|Unsetenv|Clearenv|GetEnvironmentVariable|SetEnvironmentVariable|GetEnvironmentStrings)$
-          pkg: ^syscall$
-          msg: a library takes its settings from the service, not from the environment
-        - pattern: ^(unix|windows)\.(Getenv|Environ|Setenv|Unsetenv|Clearenv|GetEnvironmentVariable|SetEnvironmentVariable)$
-          pkg: ^golang\.org/x/sys/(unix|windows)$
-          msg: a library takes its settings from the service, not from the environment
-        # Win32 reads of the whole process environment: the block, %VAR% expansion, and a new block (or
-        # Token.Environ) that inherits it. FreeEnvironmentStrings and DestroyEnvironmentBlock only release memory.
-        - pattern: ^windows\.(GetEnvironmentStrings|ExpandEnvironmentStrings|CreateEnvironmentBlock|Token\.Environ)$
-          pkg: ^golang\.org/x/sys/windows$
-          msg: a library takes its settings from the service, not from the environment
     depguard:
       # No frameworks, ORMs, DI containers; the standard library first (AGENTS.md, «Principles»).
       rules:
@@ -162,18 +96,8 @@ linters:
               desc: registers /debug/pprof on http.DefaultServeMux in init; the service mounts pprof itself
             - pkg: golang.org/x/net/trace
               desc: registers /debug/requests on http.DefaultServeMux in init
-            # Registers the xds resolvers and balancers in init and reads GRPC_XDS_BOOTSTRAP* from the environment.
-            - pkg: google.golang.org/grpc/xds
-              desc: registers process-wide resolvers and balancers in init and reads the environment; the service opts in
-            # Serve(nil) falls back to http.DefaultServeMux; cgi also reads the request from the process environment.
-            - pkg: net/http/cgi
-              desc: serves http.DefaultServeMux for a nil handler and reads the process environment; the service owns serving
-            - pkg: net/http/fcgi
-              desc: serves http.DefaultServeMux for a nil handler; the service owns serving
-            # Global loggers: glogger replaces the gRPC logger in init; glog/klog register flags and write to os.TempDir.
+            # Global loggers: glog/klog register flags and write to os.TempDir.
             # depguard matches a prefix, so k8s.io/klog covers k8s.io/klog/v2.
-            - pkg: google.golang.org/grpc/grpclog/glogger
-              desc: calls grpclog.SetLoggerV2 in init; the service installs the gRPC logger
             - pkg: github.com/golang/glog
               desc: global logger with flags and files in os.TempDir; use log/slog
             - pkg: k8s.io/klog
