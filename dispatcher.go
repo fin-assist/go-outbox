@@ -48,12 +48,14 @@ type Options struct {
 // Dispatcher is safe for concurrent use except Run, which may run once at a time.
 // It starts no goroutines until Run is called and uses only the supplied primary pool.
 type Dispatcher struct {
-	options     Options
-	pool        primaryPool
-	running     atomic.Bool
-	count, age  *prometheus.GaugeVec
-	failures    *prometheus.CounterVec
-	observation sync.Mutex
+	options Options
+	pool    primaryPool
+	// removedInterval is the removed-routes pass cadence: removedRoutesInterval in production.
+	removedInterval time.Duration
+	running         atomic.Bool
+	count, age      *prometheus.GaugeVec
+	failures        *prometheus.CounterVec
+	observation     sync.Mutex
 }
 
 // NewDispatcher validates/copies configuration and registers bounded per-target metrics.
@@ -90,7 +92,7 @@ func NewDispatcher(o Options) (*Dispatcher, error) {
 		return nil, errors.New("outbox: too many targets or insufficient pool capacity")
 	}
 	o.Routes = routes
-	d := &Dispatcher{options: o, pool: poolAdapter{o.Pool}, count: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "finassist_outbox_rows", Help: "Pending rows by configured target; unexpanded events use the empty target."}, []string{"target"}), age: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "finassist_outbox_oldest_age_seconds", Help: "Age of the oldest pending row by target."}, []string{"target"}), failures: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "finassist_outbox_delivery_errors_total", Help: "Failed deliveries by configured target."}, []string{"target"})}
+	d := &Dispatcher{options: o, pool: poolAdapter{o.Pool}, removedInterval: removedRoutesInterval, count: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "finassist_outbox_rows", Help: "Pending rows by configured target; unexpanded events use the empty target."}, []string{"target"}), age: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "finassist_outbox_oldest_age_seconds", Help: "Age of the oldest pending row by target."}, []string{"target"}), failures: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "finassist_outbox_delivery_errors_total", Help: "Failed deliveries by configured target."}, []string{"target"})}
 	collectors := []prometheus.Collector{d.count, d.age, d.failures}
 	for i, c := range collectors {
 		if err := o.Registerer.Register(c); err != nil {
@@ -155,7 +157,8 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		if more {
 			continue
 		}
-		d.wait(runCtx, wakeTargets)
+		// Wake for the next removed-routes pass even when PollInterval is longer.
+		d.wait(runCtx, wakeTargets, min(d.options.PollInterval, removedDue.Sub(d.options.Now())))
 	}
 	return ctx.Err()
 }
@@ -177,10 +180,12 @@ func (d *Dispatcher) targetLoop(ctx context.Context, target string, wake <-chan 
 		timer.Stop()
 	}
 }
-func (d *Dispatcher) wait(ctx context.Context, onWork func()) {
+
+// wait listens for a publication or sleeps for at most limit, then returns to the fan-out loop.
+func (d *Dispatcher) wait(ctx context.Context, onWork func(), limit time.Duration) {
 	c, err := d.pool.Acquire(ctx)
 	if err != nil {
-		d.pause(ctx)
+		d.pause(ctx, limit)
 		return
 	}
 	defer func() {
@@ -189,14 +194,14 @@ func (d *Dispatcher) wait(ctx context.Context, onWork func()) {
 		_ = c.closeDetached(closeCtx)
 	}()
 	if _, err = c.Exec(ctx, `LISTEN finassist_outbox`); err != nil {
-		d.pause(ctx)
+		d.pause(ctx, limit)
 		return
 	}
 	// Drain after LISTEN, so a publication between the first drain and LISTEN is visible.
 	if more, _ := d.batch(ctx, "", onWork); more {
 		return
 	}
-	wait, cancel := context.WithTimeout(ctx, d.options.PollInterval)
+	wait, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	_ = c.waitForNotification(wait)
 }
@@ -249,8 +254,9 @@ func (d *Dispatcher) removedRoutes() selection {
 
 // removedPass handles one removed-routes batch once due is reached and returns the next due
 // time and whether the batch was full. A full batch stays due, so it continues after the next
-// fan-out batch; a database error retries after the fan-out wait; otherwise the pass sleeps
-// for removedRoutesInterval.
+// fan-out batch; a database error retries after min(PollInterval, the interval); otherwise the
+// pass sleeps for the interval. A returned time after Now is always in the future, so Run's
+// bounded wait never spins.
 func (d *Dispatcher) removedPass(ctx context.Context, due time.Time) (time.Time, bool) {
 	if d.options.Now().Before(due) {
 		return due, false
@@ -260,12 +266,12 @@ func (d *Dispatcher) removedPass(ctx context.Context, due time.Time) (time.Time,
 		if ctx.Err() == nil {
 			d.options.Logger.WarnContext(ctx, "outbox primary unavailable")
 		}
-		return due, false
+		return d.options.Now().Add(min(d.options.PollInterval, d.removedInterval)), false
 	}
 	if more {
 		return due, true
 	}
-	return d.options.Now().Add(removedRoutesInterval), false
+	return d.options.Now().Add(d.removedInterval), false
 }
 
 // batch drains one lane. Empty target handles fan-out without RPC.
@@ -508,8 +514,8 @@ func (d *Dispatcher) observe(ctx context.Context) error {
 	return nil
 }
 
-func (d *Dispatcher) pause(ctx context.Context) {
-	timer := time.NewTimer(d.options.PollInterval)
+func (d *Dispatcher) pause(ctx context.Context, limit time.Duration) {
+	timer := time.NewTimer(limit)
 	defer timer.Stop()
 	select {
 	case <-timer.C:

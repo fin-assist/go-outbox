@@ -3,6 +3,7 @@ package outbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +12,34 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// eventually checks cond every 20ms until it holds, failing at the context deadline. The
+// pause keeps the check from loading the database the dispatcher under test uses.
+func eventually(t *testing.T, ctx context.Context, what string, cond func(context.Context) (bool, error)) {
+	t.Helper()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		ok, err := cond(ctx)
+		if ok {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatalf("%s: %v %v", what, err, ctx.Err())
+		}
+	}
+}
+
+// classifiedRemoved counts rows of the removed target "gone" marked by the removed-routes pass.
+func classifiedRemoved(pool *pgxpool.Pool, target string) func(context.Context) (int, error) {
+	return func(ctx context.Context) (int, error) {
+		var n int
+		err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE target=$1 AND last_error='route_unconfigured'`, target).Scan(&n)
+		return n, err
+	}
+}
 
 // planNode is the part of EXPLAIN (FORMAT JSON) output the plan assertions read.
 type planNode struct {
@@ -211,4 +240,81 @@ func TestIntegrationLaneIndexMigrationRunsConcurrently(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "transaction block") {
 		t.Fatalf("CONCURRENTLY accepted inside a transaction: %v", err)
 	}
+}
+
+// With PollInterval longer than the removed-routes cadence and no notifications, Run still
+// wakes for the next pass: a removed-route row that becomes due after the first pass is
+// classified without waiting for the poll.
+func TestIntegrationRunWakesForRemovedRoutesPassDespiteLongPoll(t *testing.T) {
+	pool := database(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	// Not due at the first pass, due shortly after; a plain INSERT sends no notification.
+	if _, err := pool.Exec(ctx, `INSERT INTO outbox_events(topic,event_key,payload,target,next_attempt_at,created_at) VALUES('t','key',''::bytea,'gone',now()+interval '300 milliseconds',now())`); err != nil {
+		t.Fatal(err)
+	}
+	d := dispatcher(t, pool, Routes{"t": {"b": func(context.Context, Event) error { return nil }}}, time.Now)
+	d.options.PollInterval = time.Hour
+	d.removedInterval = 50 * time.Millisecond
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+	classified := classifiedRemoved(pool, "gone")
+	eventually(t, ctx, "removed row not classified before the hour-long poll", func(ctx context.Context) (bool, error) {
+		n, err := classified(ctx)
+		return n == 1, err
+	})
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	assertNoSessionLocks(t, pool)
+}
+
+// An event published while the removed-routes pass works through a backlog is fanned out
+// and delivered after at most one more removed batch, long before the backlog is classified.
+func TestIntegrationRunInterleavesNewFanoutWithRemovedRoutesBacklog(t *testing.T) {
+	const backlog = 120
+	pool := database(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	if _, err := pool.Exec(ctx, `INSERT INTO outbox_events(topic,event_key,payload,target,next_attempt_at,created_at) SELECT 'old','key',''::bytea,'gone',now()-interval '1 hour',now() FROM generate_series(1,$1::int)`, backlog); err != nil {
+		t.Fatal(err)
+	}
+	classified := classifiedRemoved(pool, "gone")
+	delivered := make(chan int, 1)
+	d := dispatcher(t, pool, Routes{"new": {"b": func(ctx context.Context, _ Event) error {
+		n, err := classified(ctx)
+		if err != nil {
+			return err
+		}
+		delivered <- n
+		return nil
+	}}}, time.Now)
+	d.options.PollInterval = time.Hour // Progress must come from batches and the publication's notification.
+	d.options.BatchSize = 5
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+	// Publish only once the pass is classifying the backlog.
+	eventually(t, ctx, "removed pass never started", func(ctx context.Context) (bool, error) {
+		n, err := classified(ctx)
+		return n > 0, err
+	})
+	publish(t, pool, "new", true)
+	select {
+	case n := <-delivered:
+		if n >= backlog {
+			t.Fatalf("new event waited for the whole removed backlog (%d classified)", n)
+		}
+	case <-ctx.Done():
+		t.Fatal("new event starved by the removed-routes pass")
+	}
+	eventually(t, ctx, "removed backlog not classified", func(ctx context.Context) (bool, error) {
+		n, err := classified(ctx)
+		return n == backlog, err
+	})
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	assertNoSessionLocks(t, pool)
 }

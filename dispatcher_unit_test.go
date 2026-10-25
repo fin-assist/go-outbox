@@ -135,7 +135,7 @@ func (p *unitPool) Query(context.Context, string, ...any) (pgx.Rows, error) {
 	return p.rows, p.queryErr
 }
 func unitDispatcher(pool primaryPool, routes Routes) *Dispatcher {
-	return &Dispatcher{pool: pool, options: Options{Routes: routes, Now: func() time.Time { return time.Unix(1700000000, 0) }, BatchSize: 1, PollInterval: time.Millisecond, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, count: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "rows"}, []string{"target"}), age: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "age"}, []string{"target"}), failures: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "failures"}, []string{"target"})}
+	return &Dispatcher{pool: pool, removedInterval: removedRoutesInterval, options: Options{Routes: routes, Now: func() time.Time { return time.Unix(1700000000, 0) }, BatchSize: 1, PollInterval: time.Millisecond, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, count: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "rows"}, []string{"target"}), age: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "age"}, []string{"target"}), failures: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "failures"}, []string{"target"})}
 }
 
 func TestUnitDispatcherSelectionAndLeaseOwnership(t *testing.T) {
@@ -480,7 +480,7 @@ func TestUnitDispatcherLifecycleAndNotificationCleanup(t *testing.T) {
 					return unitIdleConn(), nil
 				}
 			}
-			d.wait(ctx, nil)
+			d.wait(ctx, nil, time.Millisecond)
 			if stage == "acquire" {
 				if c.detached {
 					t.Fatal("unacquired connection detached")
@@ -661,8 +661,8 @@ func TestUnitDispatcherRemovedRoutesPassCadence(t *testing.T) {
 					t.Fatal("full pass did not stay due or classify the row")
 				}
 			case "storage error":
-				if more || !next.Equal(due) {
-					t.Fatal("failed pass was rescheduled instead of retried")
+				if more || !next.Equal(now.Add(d.options.PollInterval)) {
+					t.Fatal("failed pass not retried after min(PollInterval, interval)")
 				}
 			}
 		})

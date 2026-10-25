@@ -230,7 +230,7 @@ func TestIntegrationNotificationWaitCannotUseDrain(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	done := make(chan struct{})
-	go func() { d.wait(ctx, nil); close(done) }()
+	go func() { d.wait(ctx, nil, d.options.PollInterval); close(done) }()
 	select {
 	case <-entered:
 	case <-ctx.Done():
@@ -361,7 +361,7 @@ func TestIntegrationDatabaseErrorsAndLostConnection(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(t.Context(), time.Millisecond)
 		defer cancel()
-		d.wait(ctx, nil)
+		d.wait(ctx, nil, d.options.PollInterval)
 	})
 }
 
@@ -882,12 +882,13 @@ func TestIntegrationRunRemovedRoutesDoNotStarveNewFanout(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("old orphan deliveries starved new event")
 	}
-	// The removed-routes pass interleaves full batches with fan-out until all due orphans are classified.
-	for classified := 0; classified != 80; {
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE target='removed-target' AND last_error='route_unconfigured'`).Scan(&classified); err != nil {
-			t.Fatalf("only %d orphan routes classified: %v", classified, err)
-		}
-	}
+	// The removed-routes pass interleaves full batches with fan-out until all due orphans are
+	// classified; TestIntegrationRunInterleavesNewFanoutWithRemovedRoutesBacklog checks the order.
+	classified := classifiedRemoved(pool, "removed-target")
+	eventually(t, ctx, "orphan routes not classified", func(ctx context.Context) (bool, error) {
+		n, err := classified(ctx)
+		return n == 80, err
+	})
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
