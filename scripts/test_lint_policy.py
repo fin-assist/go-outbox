@@ -30,21 +30,55 @@ LINT_VERSION = re.search(r"^GOLANGCI_LINT_VERSION := (\S+)$", (ROOT / "Makefile"
 GO_MOD = (ROOT / "go.mod").read_text()
 
 
+def required_version(module, go_mod):
+    """The version go_mod requires for module, or None."""
+    match = re.search(r"^\s*(?:require\s+)?" + re.escape(module) + r" (v\S+)", go_mod, re.M)
+    return match[1] if match else None
+
+
 def module_version(module):
-    match = re.search(r"^\s*" + re.escape(module) + r" (v\S+)", GO_MOD, re.M)
-    if match is None:
+    version = required_version(module, GO_MOD)
+    if version is None:
         raise AssertionError(f"{module} is not in go.mod; pin it in PINNED instead")
-    return match[1]
+    return version
+
+
+def semver_key(version):
+    """A sort key for a Go module version (vMAJOR.MINOR.PATCH[-pre][+build]); a release sorts above its prereleases."""
+    match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?", version)
+    if match is None:
+        raise ValueError(f"not a semantic version: {version}")
+    pre = match[4]
+    identifiers = ()
+    if pre is not None:
+        identifiers = tuple((0, int(part), "") if part.isdigit() else (1, 0, part) for part in pre.split("."))
+    return (int(match[1]), int(match[2]), int(match[3]), pre is None, identifiers)
+
+
+def pin_violation(module, pinned, resolved, exact):
+    """Why the version tidy resolved breaks the pin, or None.
+
+    A version taken from go.mod must stay exact: the probe checks the libraries' own dependency. A hand pin
+    absent from go.mod may be raised by tidy (a newer grpc from Renovate can need a newer otel/log), never lowered.
+    """
+    if resolved is None:
+        return f"tidy dropped the pinned {module}"
+    if exact:
+        return None if resolved == pinned else f"tidy moved the pinned {module} off {pinned} to {resolved}"
+    if semver_key(resolved) < semver_key(pinned):
+        return f"tidy lowered the pinned {module} below {pinned} to {resolved}"
+    return None
 
 
 # The probe is hermetic: every module it compiles is pinned, so an upstream release cannot break CI.
-# Versions present in go.mod follow it (Renovate updates them there). Renovate does not read the
-# constants below: they are raised by hand in a reviewed PR, when the libraries or services move to a
-# new prometheus/grpc/otel/klog/automaxprocs/automemlimit release, or when the probe needs an API that only a newer release has.
+# Versions present in go.mod follow it exactly (Renovate updates them there). Renovate does not read the
+# other constants below: they are raised by hand in a reviewed PR, when the libraries or services move to a
+# new otel/log/klog/automaxprocs/automemlimit release, or when the probe needs an API that only a newer release has.
+# tidy may raise such a hand pin (a newer grpc or otel from go.mod can require it), never lower it (pin_violation).
 GO_VERSION = re.search(r"^go (\S+)$", GO_MOD, re.M)[1]
 PINNED = {
-    "github.com/prometheus/client_golang": "v1.23.2",
-    "google.golang.org/grpc": "v1.84.0",
+    "github.com/prometheus/client_golang": module_version("github.com/prometheus/client_golang"),
+    "google.golang.org/grpc": module_version("google.golang.org/grpc"),
     "go.opentelemetry.io/otel": module_version("go.opentelemetry.io/otel"),
     "go.opentelemetry.io/otel/log": "v0.20.0",  # the release paired with otel v1.44.0
     "k8s.io/klog": "v1.0.0",
@@ -270,6 +304,45 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(workflow["env"]["GOLANGCI_LINT_VERSION"], LINT_VERSION)
 
 
+class PinTests(unittest.TestCase):
+    def test_semver_order(self):
+        ordered = ["v0.9.0", "v0.10.0", "v1.0.0-rc.1", "v1.0.0-rc.2", "v1.0.0-rc.10", "v1.0.0", "v1.0.1", "v1.10.0", "v2.0.0"]
+        self.assertEqual(sorted(reversed(ordered), key=semver_key), ordered)
+        self.assertEqual(semver_key("v1.2.3+incompatible"), semver_key("v1.2.3"))
+        self.assertLess(semver_key("v0.0.0-20260101000000-abcdef123456"), semver_key("v0.0.0"))
+        with self.assertRaises(ValueError):
+            semver_key("1.2.3")
+
+    def test_go_mod_versions_stay_exact(self):
+        self.assertIsNone(pin_violation("m", "v1.2.0", "v1.2.0", exact=True))
+        self.assertIn("moved", pin_violation("m", "v1.2.0", "v1.3.0", exact=True))
+        self.assertIn("moved", pin_violation("m", "v1.2.0", "v1.1.0", exact=True))
+
+    def test_hand_pins_may_only_rise(self):
+        self.assertIsNone(pin_violation("m", "v0.20.0", "v0.20.0", exact=False))
+        self.assertIsNone(pin_violation("m", "v0.20.0", "v0.21.0", exact=False))
+        self.assertIsNone(pin_violation("m", "v0.9.0", "v0.10.0", exact=False))
+        self.assertIn("lowered", pin_violation("m", "v0.20.0", "v0.19.9", exact=False))
+        self.assertIn("lowered", pin_violation("m", "v1.0.0", "v1.0.0-rc.1", exact=False))
+
+    def test_dropped_pin_is_a_violation(self):
+        self.assertIn("dropped", pin_violation("m", "v1.0.0", None, exact=False))
+        self.assertIn("dropped", pin_violation("m", "v1.0.0", None, exact=True))
+
+    def test_required_version_reads_blocks_and_single_lines(self):
+        go_mod = "module x\n\nrequire a.example/m v1.0.0\n\nrequire (\n\tb.example/m v2.1.0 // indirect\n)\n"
+        self.assertEqual(required_version("a.example/m", go_mod), "v1.0.0")
+        self.assertEqual(required_version("b.example/m", go_mod), "v2.1.0")
+        self.assertIsNone(required_version("b.example", go_mod))
+        self.assertIsNone(required_version("c.example/m", go_mod))
+
+    def test_pins_follow_go_mod_where_present(self):
+        for module, version in PINNED.items():
+            from_go_mod = required_version(module, GO_MOD)
+            if from_go_mod is not None:
+                self.assertEqual(version, from_go_mod, module)
+
+
 class ProbeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -307,8 +380,10 @@ class ProbeTests(unittest.TestCase):
             raise AssertionError(tidy.stderr)
         resolved = (root / "go.mod").read_text()
         for module, version in PINNED.items():
-            if not re.search(r"^\s*" + re.escape(module) + " " + re.escape(version) + r"( |$)", resolved, re.M):
-                raise AssertionError(f"tidy moved the pinned {module} off {version}:\n{resolved}")
+            exact = required_version(module, GO_MOD) is not None
+            violation = pin_violation(module, version, required_version(module, resolved), exact)
+            if violation:
+                raise AssertionError(f"{violation}:\n{resolved}")
 
     @classmethod
     def tearDownClass(cls):
