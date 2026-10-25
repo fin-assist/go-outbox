@@ -863,7 +863,9 @@ func TestIntegrationRunDeliversNewEventsWhileSlowSuccessfulTargetBusy(t *testing
 }
 func TestIntegrationRunRemovedRoutesDoNotStarveNewFanout(t *testing.T) {
 	pool := database(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	// A hang guard, not a speed bound: each orphan row closes its locked session and opens a
+	// new one, which takes tens of milliseconds under -race on a loaded runner.
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	healthy := make(chan struct{}, 1)
 	// More than one batch of old orphan deliveries must not stop new fan-out.
