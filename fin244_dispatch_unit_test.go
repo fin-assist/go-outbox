@@ -333,3 +333,21 @@ func TestUnitDispatcherPersistsOnlyBoundedDeliveryClassifications(t *testing.T) 
 		})
 	}
 }
+
+func TestUnitDispatcherRunRejectsTransactionBeforeClaimingRun(t *testing.T) {
+	manager := postgres.New(&fin244Session{txs: []*fin244Tx{{}}})
+	// An already-running instance must still reject the transaction context first;
+	// a nil pool makes this an entirely network-free check of the entry boundary.
+	d := &Dispatcher{}
+	d.running.Store(true)
+	var refusal error
+	if err := manager.Run(t.Context(), func(ctx context.Context) error {
+		refusal = d.Run(ctx)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(refusal, postgres.ErrForeignTransaction) || !d.running.Load() {
+		t.Fatalf("transaction context reached Run ownership: err=%v running=%v", refusal, d.running.Load())
+	}
+}

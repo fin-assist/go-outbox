@@ -105,8 +105,13 @@ func NewDispatcher(o Options) (*Dispatcher, error) {
 // No RPC runs inside a transaction. A short row-lock transaction obtains a session advisory lock;
 // the dedicated connection holds it through RPC and acknowledgement. Process death frees the
 // lock and leaves the row. An uncertain acknowledgement may lead to a duplicate delivery.
+// ctx must be a service lifecycle context, without a go-postgres transaction. A transaction
+// context returns postgres.ErrForeignTransaction before acquiring connections or starting workers.
 // Cancellation is returned as ctx.Err(). A second concurrent Run returns an error.
 func (d *Dispatcher) Run(ctx context.Context) error {
+	if _, ok := postgres.Tx(ctx); ok {
+		return postgres.ErrForeignTransaction
+	}
 	if !d.running.CompareAndSwap(false, true) {
 		return errors.New("outbox: already running")
 	}

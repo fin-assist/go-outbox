@@ -113,3 +113,56 @@ func TestAPIPublisherRejectsForeignManagerTransaction(t *testing.T) {
 		t.Fatalf("owner could not commit: %v", err)
 	}
 }
+
+func TestAPIDispatcherRunRejectsServiceTransactionAndRemainsReusable(t *testing.T) {
+	pool := database(t)
+	manager := postgres.New(pool)
+	publisher, err := NewPublisher(manager, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivered := make(chan struct{}, 1)
+	d := dispatcher(t, pool, Routes{"t": {"x": func(context.Context, Event) error {
+		delivered <- struct{}{}
+		return nil
+	}}}, time.Now)
+	var refusal error
+	var before, after int64
+	if err := manager.Run(t.Context(), func(ctx context.Context) error {
+		if err := publisher.Publish(ctx, "t", "k", nil); err != nil {
+			return err
+		}
+		call, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer cancel()
+		before = pool.Stat().AcquireCount()
+		refusal = d.Run(call)
+		after = pool.Stat().AcquireCount()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(refusal, postgres.ErrForeignTransaction) || after != before || d.running.Load() || len(delivered) != 0 || pending(t, pool) != 1 {
+		t.Fatalf("transactional Run did work or retained ownership: err=%v acquired=%d->%d running=%v deliveries=%d", refusal, before, after, d.running.Load(), len(delivered))
+	}
+	// The rejected call must not poison the next service-owned worker lifecycle.
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+	select {
+	case <-delivered:
+	case <-ctx.Done():
+		t.Fatal("dispatcher could not start after refusing a transaction context")
+	}
+	// Wait for the acknowledgement to commit before cancelling the worker.
+	for pending(t, pool) != 0 {
+		if ctx.Err() != nil {
+			t.Fatal("delivered event was not acknowledged")
+		}
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) || d.running.Load() {
+		t.Fatalf("reused worker lifecycle did not stop: err=%v running=%v", err, d.running.Load())
+	}
+	assertNoSessionLocks(t, pool)
+}
