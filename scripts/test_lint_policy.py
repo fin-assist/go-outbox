@@ -1,0 +1,473 @@
+"""The forbidigo rules in .golangci.yml reject every way to reach process-wide state.
+
+The pinned golangci-lint (version from the Makefile) runs with the repository's
+.golangci.yml on a generated probe module: one line per forbidden identifier, which must
+be reported, chains and an aliased import, blank imports rejected by depguard, and the
+allowed forms (constructors, adapters, methods on injected values), which must not. All
+probe dependencies are pinned. The probe runs for linux and windows, so the platform
+packages are checked too. Static checks pin analyze-types, the exclusions and the
+linter version shared with ci.yml.
+"""
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+try:
+    import yaml
+except ImportError as error:  # a missing parser must fail the checks, never skip them
+    raise ImportError("PyYAML is required by scripts/test_lint_policy.py: "
+                      "install python3-yaml or `pip install pyyaml`") from error
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CONFIG = ROOT / ".golangci.yml"
+LINT_VERSION = re.search(r"^GOLANGCI_LINT_VERSION := (\S+)$", (ROOT / "Makefile").read_text(), re.M)[1]
+GO_MOD = (ROOT / "go.mod").read_text()
+
+
+def required_version(module, go_mod):
+    """The version go_mod requires for module, or None."""
+    match = re.search(r"^\s*(?:require\s+)?" + re.escape(module) + r" (v\S+)", go_mod, re.M)
+    return match[1] if match else None
+
+
+def semver_key(version):
+    """A sort key for a Go module version (vMAJOR.MINOR.PATCH[-pre][+build]); a release sorts above its prereleases."""
+    match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?", version)
+    if match is None:
+        raise ValueError(f"not a semantic version: {version}")
+    pre = match[4]
+    identifiers = ()
+    if pre is not None:
+        identifiers = tuple((0, int(part), "") if part.isdigit() else (1, 0, part) for part in pre.split("."))
+    return (int(match[1]), int(match[2]), int(match[3]), pre is None, identifiers)
+
+
+def pin(module, manual=None, go_mod=GO_MOD):
+    """The probe version of module: max(go.mod, manual) when go.mod requires it, else the manual pin."""
+    required = required_version(module, go_mod)
+    if required is None:
+        if manual is None:
+            raise AssertionError(f"{module} is not in go.mod; give it a manual pin")
+        return manual
+    if manual is None:
+        return required
+    return max(required, manual, key=semver_key)
+
+
+def pin_violation(module, pinned, resolved, exact):
+    """Why the version tidy resolved breaks the pin, or None.
+
+    A module present in go.mod must stay exactly at its pin (max of go.mod and the manual pin): the probe checks
+    the libraries' own dependency. A hand pin absent from go.mod may be raised by tidy (a newer grpc from Renovate can need a newer otel/log), never lowered.
+    """
+    if resolved is None:
+        return f"tidy dropped the pinned {module}"
+    if exact:
+        return None if resolved == pinned else f"tidy moved the pinned {module} off {pinned} to {resolved}"
+    if semver_key(resolved) < semver_key(pinned):
+        return f"tidy lowered the pinned {module} below {pinned} to {resolved}"
+    return None
+
+
+# The probe is hermetic: every module it compiles is pinned, so an upstream release cannot break CI.
+# Versions present in go.mod follow it (Renovate updates them there); a manual pin of such a module only raises
+# it (pin: max of both), and tidy must keep that version exactly. Renovate does not read MANUAL: its versions are
+# raised by hand in a reviewed PR, when the libraries or services move to a new otel/log/klog/automaxprocs/
+# automemlimit release, or when the probe needs an API that only a newer release has. tidy may raise a manual pin
+# of a module absent from go.mod (a newer grpc or otel from go.mod can require it), never lower it (pin_violation).
+GO_VERSION = re.search(r"^go (\S+)$", GO_MOD, re.M)[1]
+FROM_GO_MOD = [
+    "github.com/prometheus/client_golang",
+    "google.golang.org/grpc",
+    "go.opentelemetry.io/otel",
+    "go.opentelemetry.io/otel/metric",
+    "go.opentelemetry.io/otel/trace",
+    "golang.org/x/net",
+    "golang.org/x/sys",
+]
+MANUAL = {
+    "go.opentelemetry.io/otel/log": "v0.20.0",  # the release paired with otel v1.44.0
+    "k8s.io/klog": "v1.0.0",
+    "k8s.io/klog/v2": "v2.130.1",
+    "go.uber.org/automaxprocs": "v1.6.0",
+    "github.com/KimMachineGun/automemlimit": "v1.0.1",
+}
+PINNED = {module: pin(module) for module in FROM_GO_MOD} | {module: pin(module, version) for module, version in MANUAL.items()}
+
+PROMETHEUS = "github.com/prometheus/client_golang/prometheus"
+# import path -> identifiers that must be reported; every one is referenced as a value.
+FORBIDDEN = {
+    "fmt": ["Print", "Printf", "Println"],
+    "log/slog": ["Default", "SetDefault", "SetLogLoggerLevel", "Debug", "DebugContext", "Info", "InfoContext",
+                 "Warn", "WarnContext", "Error", "ErrorContext", "Log", "LogAttrs"],
+    "log": ["Print", "Printf", "Println", "Fatal", "Fatalf", "Fatalln", "Panic", "Panicf", "Panicln",
+            "Default", "Writer", "SetOutput", "SetFlags", "SetPrefix", "Flags", "Prefix", "Output"],
+    "google.golang.org/grpc/grpclog": ["Info", "Infof", "Infoln", "InfoDepth", "Warning", "Warningf",
+                                       "Warningln", "WarningDepth", "Error", "Errorf", "Errorln", "ErrorDepth",
+                                       "Fatal", "Fatalf", "Fatalln", "FatalDepth", "Print", "Printf", "Println",
+                                       "V", "Component", "SetLogger", "SetLoggerV2"],
+    PROMETHEUS: ["MustRegister", "Register", "Unregister", "DefaultRegisterer", "DefaultGatherer"],
+    PROMETHEUS + "/promauto": ["NewCounter", "NewCounterVec", "NewCounterFunc", "NewGauge", "NewGaugeVec",
+                               "NewGaugeFunc", "NewHistogram", "NewHistogramVec", "NewSummary",
+                               "NewSummaryVec", "NewUntypedFunc"],
+    PROMETHEUS + "/promhttp": ["Handler"],
+    "golang.org/x/net/http/httpproxy": ["FromEnvironment"],
+    "net/http": ["DefaultClient", "DefaultTransport", "DefaultServeMux", "Handle", "HandleFunc", "Get", "Head",
+                 "Post", "PostForm", "ListenAndServe", "ListenAndServeTLS", "Serve", "ServeTLS",
+                 "ProxyFromEnvironment"],
+    "google.golang.org/grpc": ["EnableTracing"],
+    "google.golang.org/grpc/binarylog": ["SetSink"],
+    "google.golang.org/grpc/encoding/gzip": ["SetLevel"],
+    "google.golang.org/grpc/encoding": ["RegisterCodec", "RegisterCodecV2", "RegisterCompressor"],
+    "google.golang.org/grpc/resolver": ["Register", "SetDefaultScheme"],
+    "google.golang.org/grpc/balancer": ["Register"],
+    "go.opentelemetry.io/otel": ["GetTracerProvider", "SetTracerProvider", "GetMeterProvider",
+                                 "SetMeterProvider", "GetTextMapPropagator", "SetTextMapPropagator",
+                                 "SetErrorHandler", "GetErrorHandler", "SetLogger", "Tracer", "Meter",
+                                 "Handle"],
+    "go.opentelemetry.io/otel/log/global": ["GetLoggerProvider", "SetLoggerProvider", "Logger"],
+    "os/signal": ["Notify", "NotifyContext", "Ignore", "Reset", "Stop"],
+    "os": ["Getenv", "LookupEnv", "Environ", "ExpandEnv", "Setenv", "Unsetenv", "Clearenv", "Args",
+           "UserHomeDir", "UserConfigDir", "UserCacheDir", "Stdout", "Stderr", "Stdin", "TempDir",
+           "CreateTemp", "MkdirTemp", "Chdir"],
+    "syscall": ["Getenv", "Environ", "Setenv", "Unsetenv", "Clearenv", "Chdir", "Stdin", "Stdout", "Stderr"],
+    "flag": ["Arg", "Args", "Bool", "BoolFunc", "BoolVar", "CommandLine", "Duration", "DurationVar", "Float64",
+             "Float64Var", "Func", "Int", "Int64", "Int64Var", "IntVar", "Lookup", "NArg", "NFlag", "Parse",
+             "Parsed", "PrintDefaults", "Set", "String", "StringVar", "TextVar", "Uint", "Uint64", "Uint64Var",
+             "UintVar", "Usage", "Var", "Visit", "VisitAll"],
+    "runtime/debug": ["SetCrashOutput", "SetGCPercent", "SetMaxStack", "SetMaxThreads", "SetMemoryLimit",
+                      "SetPanicOnFault", "SetTraceback"],
+    "runtime": ["GOMAXPROCS", "SetDefaultGOMAXPROCS"],
+}
+PLATFORM = {
+    "unix": {"golang.org/x/sys/unix": ["Getenv", "Environ", "Setenv", "Unsetenv", "Clearenv", "Chdir", "Fchdir",
+                                          "Umask", "Chroot", "Setrlimit", "Prlimit", "Stdin", "Stdout", "Stderr"],
+             "syscall": ["Fchdir", "Umask", "Chroot", "Setrlimit"]},
+    "windows": {"golang.org/x/sys/windows": ["Getenv", "Environ", "Setenv", "Unsetenv", "Clearenv",
+                                             "GetEnvironmentVariable", "SetEnvironmentVariable", "GetEnvironmentStrings",
+                                             "ExpandEnvironmentStrings", "CreateEnvironmentBlock", "Token.Environ",
+                                             "Token(0).Environ(true)", "Chdir", "SetCurrentDirectory",
+                                             "SetDllDirectory", "SetDefaultDllDirectories", "Stdin", "Stdout",
+                                             "Stderr", "GetStdHandle", "SetStdHandle", "GetTempPath",
+                                             "GetCommandLine", "CommandLineToArgv"],
+                "syscall": ["GetEnvironmentVariable", "SetEnvironmentVariable", "GetEnvironmentStrings",
+                            "SetCurrentDirectory", "GetStdHandle", "GetTempPath", "GetCommandLine",
+                            "CommandLineToArgv"]},
+}
+
+# Chains and an aliased import: each marked line must be reported by its first identifier.
+CHAINS = '''package probe
+
+import (
+	"context"
+	stdlog "log"
+	"log/slog"
+	"net/http"
+	"os"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel"
+)
+
+// Chains reaches process-wide state through a chain, an alias or a method.
+func Chains(ctx context.Context, c prometheus.Collector, req *http.Request, f *os.File) {
+	prometheus.DefaultRegisterer.MustRegister(c) // want
+	stdlog.Default().Printf("x")                 // want
+	slog.Default().InfoContext(ctx, "x")         // want
+	_, _ = http.DefaultClient.Do(req)            // want
+	_ = otel.GetTracerProvider().Tracer("x")     // want
+	stdlog.Printf("x")                           // want
+	_ = f.Chdir()                                // want
+}
+'''
+
+# Imported even blank, these change process-wide state in init: depguard rejects each import line.
+BLANK = '''package probe
+
+import (
+	_ "expvar"                                 // want
+	_ "github.com/KimMachineGun/automemlimit"  // want
+	_ "github.com/golang/glog"                 // want
+	_ "go.uber.org/automaxprocs"               // want
+	_ "golang.org/x/net/trace"                 // want
+	_ "google.golang.org/grpc/grpclog/glogger" // want
+	_ "google.golang.org/grpc/xds"             // want
+	_ "k8s.io/klog"                            // want
+	_ "k8s.io/klog/v2"                         // want
+	_ "net/http/cgi"                           // want
+	_ "net/http/fcgi"                          // want
+	_ "net/http/pprof"                         // want
+)
+'''
+
+
+def marked(text):
+    return {number for number, line in enumerate(text.splitlines(), start=1) if line.endswith("// want")}
+
+ALLOWED = '''package probe
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"log/slog"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
+	"runtime/debug"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/balancer"
+	"google.golang.org/grpc/encoding"
+	"google.golang.org/grpc/grpclog"
+	"google.golang.org/grpc/resolver"
+)
+
+// GRPCLogger is an adapter a library may export; the service installs it with SetLoggerV2.
+func GRPCLogger(w io.Writer) grpclog.LoggerV2 {
+	var logger grpclog.LoggerV2 = grpclog.NewLoggerV2(w, w, w)
+	_ = grpclog.NewLoggerV2WithVerbosity(w, w, w, 1)
+	var _ grpclog.DepthLoggerV2
+	return logger
+}
+
+// Allowed uses injected values only; none of these lines may be reported.
+func Allowed(ctx context.Context, l *slog.Logger, reg prometheus.Registerer, c prometheus.Collector,
+	client *http.Client, w io.Writer, tp trace.TracerProvider, mp metric.MeterProvider) {
+	_ = tp.Tracer("x")
+	_ = mp.Meter("x")
+	set := flag.NewFlagSet("library", flag.ContinueOnError)
+	set.SetOutput(w)
+	_ = set.String("name", "", "usage")
+	_ = set.Parse(nil)
+	_, _ = flag.UnquoteUsage(set.Lookup("name"))
+	_, _ = os.OpenFile(filepath.Join("dir", "file"), os.O_RDWR|os.O_CREATE, 0o600)
+	_ = os.Mkdir(filepath.Join("dir", "sub"), 0o700)
+	_, _ = debug.ReadBuildInfo()
+	_ = debug.Stack()
+	_ = runtime.NumCPU()
+	_ = runtime.GOMAXPROCS(0) //nolint:forbidigo // read-only default of a pool size the service may override
+	file, _ := os.Open("x")
+	_ = file.Name()
+	_, _ = file.ReadDir(1)
+	l.InfoContext(ctx, "x")
+	l.Info("x")
+	slog.New(slog.NewTextHandler(w, nil)).ErrorContext(ctx, "x", slog.String("k", "v"))
+	std := log.New(w, "", 0)
+	std.SetOutput(w)
+	std.Printf("x")
+	reg.MustRegister(c)
+	r := prometheus.NewRegistry()
+	r.MustRegister(c)
+	_ = prometheus.NewCounter(prometheus.CounterOpts{Name: "x"})
+	promauto.With(reg).NewCounter(prometheus.CounterOpts{Name: "y"})
+	promauto.With(r).NewGaugeVec(prometheus.GaugeOpts{Name: "z"}, nil)
+	h := promhttp.HandlerFor(r, promhttp.HandlerOpts{})
+	_ = promhttp.InstrumentMetricHandler(reg, h)
+	mux := http.NewServeMux()
+	mux.Handle("/", h)
+	_, _ = client.Get("http://example.invalid")
+	server := &http.Server{Handler: mux}
+	_ = server.Serve
+	_ = server.ServeTLS
+	_ = &http.Transport{Proxy: http.ProxyURL(nil)}
+	_, _ = grpc.NewClient("passthrough:///x", grpc.WithResolvers(resolver.Get("passthrough")))
+	_ = encoding.GetCodecV2("proto")
+	_ = encoding.GetCompressor("gzip")
+	_ = balancer.Get("round_robin")
+	_ = grpc.ForceCodecV2
+	_, _ = os.ReadFile("x")
+	_ = os.Expand("$A", func(string) string { return "" })
+	_ = fmt.Sprintf("x")
+	_, _ = fmt.Fprintf(w, "x")
+}
+'''
+
+
+def module_path(import_path):
+    return import_path.rsplit("/", 1)[-1]
+
+
+def forbidden_file(imports, build="", name="Forbidden"):
+    lines = ([build, ""] if build else []) + ["package probe", "", "import ("]
+    lines += [f'\t"{path}"' for path in imports]
+    lines += [")", "", f"// {name} references every forbidden identifier on its own line.", f"func {name}() {{"]
+    expected = set()
+    for path, names in imports.items():
+        for name in names:  # every name of the family, one per line; a call form is assigned as a two-value result
+            target = "_, _" if "(" in name else "_"
+            lines.append(f"\t{target} = {module_path(path)}.{name}")
+            expected.add(len(lines))
+    if not build:
+        for builtin in ["print", "println"]:
+            lines.append(f'\t{builtin}("x")')
+            expected.add(len(lines))
+    lines.append("}")
+    return "\n".join(lines) + "\n", expected
+
+
+def lint(root, tool, goos):
+    command = [str(tool), "run",
+               "--allow-parallel-runners", "--enable-only", "forbidigo,depguard", "--max-issues-per-linter", "0",
+               "--max-same-issues", "0", "--output.json.path", "stdout", "--show-stats=false", "./..."]
+    result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=600,
+                            env=dict(os.environ, GOTOOLCHAIN="auto", GOOS=goos, GOFLAGS="-mod=mod"))
+    report = json.loads(result.stdout.strip().splitlines()[-1]) if result.stdout.strip() else None
+    if report is None:
+        raise AssertionError(f"golangci-lint produced no report:\n{result.stderr}")
+    return report.get("Issues") or [], result
+
+
+class ConfigTests(unittest.TestCase):
+    def test_forbidigo_matches_types_and_excludes_only_tests_and_pgtest(self):
+        config = yaml.safe_load(CONFIG.read_text())
+        self.assertIs(config["linters"]["settings"]["forbidigo"]["analyze-types"], True)
+        excluded = sorted(rule["path"] for rule in config["linters"]["exclusions"]["rules"]
+                          if "forbidigo" in rule.get("linters", []))
+        self.assertEqual(excluded, sorted([r"_test\.go", "internal/pgtest/"]))
+
+    def test_probe_uses_the_linter_version_of_ci(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+        self.assertEqual(workflow["env"]["GOLANGCI_LINT_VERSION"], LINT_VERSION)
+
+
+class PinTests(unittest.TestCase):
+    def test_semver_order(self):
+        ordered = ["v0.9.0", "v0.10.0", "v1.0.0-rc.1", "v1.0.0-rc.2", "v1.0.0-rc.10", "v1.0.0", "v1.0.1", "v1.10.0", "v2.0.0"]
+        self.assertEqual(sorted(reversed(ordered), key=semver_key), ordered)
+        self.assertEqual(semver_key("v1.2.3+incompatible"), semver_key("v1.2.3"))
+        self.assertLess(semver_key("v0.0.0-20260101000000-abcdef123456"), semver_key("v0.0.0"))
+        with self.assertRaises(ValueError):
+            semver_key("1.2.3")
+
+    def test_go_mod_versions_stay_exact(self):
+        self.assertIsNone(pin_violation("m", "v1.2.0", "v1.2.0", exact=True))
+        self.assertIn("moved", pin_violation("m", "v1.2.0", "v1.3.0", exact=True))
+        self.assertIn("moved", pin_violation("m", "v1.2.0", "v1.1.0", exact=True))
+
+    def test_hand_pins_may_only_rise(self):
+        self.assertIsNone(pin_violation("m", "v0.20.0", "v0.20.0", exact=False))
+        self.assertIsNone(pin_violation("m", "v0.20.0", "v0.21.0", exact=False))
+        self.assertIsNone(pin_violation("m", "v0.9.0", "v0.10.0", exact=False))
+        self.assertIn("lowered", pin_violation("m", "v0.20.0", "v0.19.9", exact=False))
+        self.assertIn("lowered", pin_violation("m", "v1.0.0", "v1.0.0-rc.1", exact=False))
+
+    def test_dropped_pin_is_a_violation(self):
+        self.assertIn("dropped", pin_violation("m", "v1.0.0", None, exact=False))
+        self.assertIn("dropped", pin_violation("m", "v1.0.0", None, exact=True))
+
+    def test_required_version_reads_blocks_and_single_lines(self):
+        go_mod = "module x\n\nrequire a.example/m v1.0.0\n\nrequire (\n\tb.example/m v2.1.0 // indirect\n)\n"
+        self.assertEqual(required_version("a.example/m", go_mod), "v1.0.0")
+        self.assertEqual(required_version("b.example/m", go_mod), "v2.1.0")
+        self.assertIsNone(required_version("b.example", go_mod))
+        self.assertIsNone(required_version("c.example/m", go_mod))
+
+    def test_pins_follow_go_mod_where_present(self):
+        for module, version in PINNED.items():
+            from_go_mod = required_version(module, GO_MOD)
+            if from_go_mod is not None:
+                expected = max([from_go_mod] + ([MANUAL[module]] if module in MANUAL else []), key=semver_key)
+                self.assertEqual(version, expected, module)
+        for module in FROM_GO_MOD:
+            self.assertIsNotNone(required_version(module, GO_MOD), f"{module} left go.mod; move it to MANUAL")
+
+    def test_pin_takes_the_higher_of_go_mod_and_manual(self):
+        go_mod = "module x\n\nrequire (\n\ta.example/m v1.5.0\n)\n"
+        self.assertEqual(pin("a.example/m", "v1.2.0", go_mod), "v1.5.0")  # go.mod above the manual pin
+        self.assertEqual(pin("a.example/m", "v1.7.0", go_mod), "v1.7.0")  # go.mod below the manual pin
+        self.assertEqual(pin("a.example/m", "v1.5.0", go_mod), "v1.5.0")
+        self.assertEqual(pin("a.example/m", None, go_mod), "v1.5.0")
+        # The string order disagrees with semver here: pin must compare by semver_key.
+        self.assertEqual(pin("c.example/m", "v1.9.0", "require c.example/m v1.10.0\n"), "v1.10.0")
+        self.assertEqual(pin("c.example/m", "v1.10.0", "require c.example/m v1.9.0\n"), "v1.10.0")
+        self.assertEqual(pin("c.example/m", "v1.0.0-rc.1", "require c.example/m v1.0.0\n"), "v1.0.0")
+        self.assertEqual(pin("b.example/m", "v0.3.0", go_mod), "v0.3.0")  # absent from go.mod
+        with self.assertRaises(AssertionError):
+            pin("b.example/m", None, go_mod)
+
+
+class ProbeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.directory = tempfile.TemporaryDirectory()
+        root = cls.root = Path(cls.directory.name)
+        shutil.copyfile(CONFIG, root / ".golangci.yml")
+        requires = "".join(f"\t{module} {version}\n" for module, version in sorted(PINNED.items()))
+        (root / "go.mod").write_text(f"module example.com/probe\n\ngo {GO_VERSION}\n\nrequire (\n{requires})\n")
+        common, cls.expected = forbidden_file(FORBIDDEN)
+        (root / "forbidden.go").write_text(common)
+        cls.platform = {}
+        for goos, imports in PLATFORM.items():
+            text, lines = forbidden_file(imports, f"//go:build {goos}", "Forbidden" + goos.title())
+            (root / f"forbidden_{goos}.go").write_text(text)
+            cls.platform[goos] = lines
+        (root / "allowed.go").write_text(ALLOWED)
+        (root / "chains.go").write_text(CHAINS)
+        (root / "blank.go").write_text(BLANK)
+        # Exclusions: tests and exactly internal/pgtest are exempt; a similar path is not.
+        reference = 'package {pkg}\n\nimport "os"\n\nfunc Env() string {{ return os.Getenv("X") }}\n'
+        (root / "probe_test.go").write_text(reference.format(pkg="probe").replace("Env()", "testEnv()"))
+        for folder in ["internal/pgtest", "internal/pgtestx"]:
+            (root / folder).mkdir(parents=True)
+            (root / folder / "env.go").write_text(reference.format(pkg=folder.rsplit("/", 1)[-1]))
+        # Build the pinned linter once for the host; GOOS then selects only the analysed platform.
+        install = subprocess.run(["go", "install", f"github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{LINT_VERSION}"],
+                                 capture_output=True, text=True, timeout=900,
+                                 env=dict(os.environ, GOTOOLCHAIN="auto", GOBIN=str(root / "bin")))
+        if install.returncode != 0:
+            raise AssertionError(install.stderr)
+        cls.tool = root / "bin" / "golangci-lint"
+        tidy = subprocess.run(["go", "mod", "tidy"], cwd=root, capture_output=True, text=True, timeout=600,
+                              env=dict(os.environ, GOTOOLCHAIN="auto"))
+        if tidy.returncode != 0:
+            raise AssertionError(tidy.stderr)
+        resolved = (root / "go.mod").read_text()
+        for module, version in PINNED.items():
+            exact = required_version(module, GO_MOD) is not None
+            violation = pin_violation(module, version, required_version(module, resolved), exact)
+            if violation:
+                raise AssertionError(f"{violation}:\n{resolved}")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.directory.cleanup()
+
+    def check(self, goos):
+        issues, result = lint(self.root, self.tool, goos)
+        others = [issue for issue in issues if issue["FromLinter"] not in ("forbidigo", "depguard")]
+        self.assertEqual(others, [], result.stderr)
+        reported = {(issue["Pos"]["Filename"], issue["Pos"]["Line"]) for issue in issues}
+        expected = {("forbidden.go", line) for line in self.expected}
+        expected |= {(f"forbidden_{goos_}.go", line)
+                     for goos_, lines in self.platform.items()
+                     if goos_ == ("windows" if goos == "windows" else "unix") for line in lines}
+        expected.add(("internal/pgtestx/env.go", 5))
+        expected |= {("chains.go", line) for line in marked(CHAINS)}
+        expected |= {("blank.go", line) for line in marked(BLANK)}
+        self.assertEqual(sorted(reported - expected), [], "reported outside the forbidden lines")
+        self.assertEqual(sorted(expected - reported), [], "forbidden lines not reported")
+
+    def test_linux(self):
+        self.check("linux")
+
+    def test_windows(self):
+        self.check("windows")
+
+
+if __name__ == "__main__":
+    unittest.main()

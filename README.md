@@ -19,7 +19,8 @@ doc.go               package documentation: what the library does and what it ne
 migrations.go        Migrations, MigrationsName, MigrationsTable for the service's migration runner
 migrations/          SQL migrations of the library, embedded (NNN_name.up.sql / .down.sql)
 internal/pgtest/     test PostgreSQL server selection; databases and up -> down -> up via go-migrate/migratetest
-scripts/             coverage execution guards and regressions, CHANGELOG checks (Python, standard library)
+scripts/             coverage execution guards and regressions, CHANGELOG checks, lint policy probe and workflow
+                     hardening tests (Python; the tests need PyYAML, the lint probe also the module proxy)
 docs/releasing.md    versions and releases
 ```
 
