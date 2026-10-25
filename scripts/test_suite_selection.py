@@ -78,6 +78,57 @@ class SuiteSelectionTests(unittest.TestCase):
             self.assertNotEqual(status, 0, output)
             self.assertIn("FuzzUnclassified", output)
 
+    def test_only_exact_pgtest_package_is_excluded_from_every_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copyfile(MAKEFILE, root / "Makefile")
+            (root / "scripts").mkdir()
+            shutil.copyfile(Path(__file__).with_name("check-suite.sh"), root / "scripts/check-suite.sh")
+            (root / "go.mod").write_text("module example.com/scope\n\ngo 1.26.0\n")
+            packages = {"": "scope", "internal/pgtest": "pgtest",
+                        "internal/pgtest/nested": "nested", "internal/pgtestextra": "pgtestextra",
+                        "raceonly": "raceonly"}
+            for path, package in packages.items():
+                folder = root / path
+                folder.mkdir(parents=True, exist_ok=True)
+                build = "//go:build race\n\n" if path == "raceonly" else ""
+                (folder / "value.go").write_text(build + f"package {package}\nfunc Value() int {{ return 42 }}\n")
+                (folder / "value_test.go").write_text(
+                    build + f'package {package}\nimport "testing"\n' +
+                    "".join(f'func Test{level}Value(t *testing.T) {{ if Value()!=42 {{ t.Fatal("value") }} }}\n'
+                            for level in ["Unit", "Integration", "API"]))
+            for level in ["unit", "integration", "api"]:
+                with self.subTest(level=level):
+                    status, output = self.run_make(root, "collect-" + level)
+                    self.assertEqual(status, 0, output)
+                    profile = (root / (level + ".out")).read_text()
+                    self.assertNotIn("example.com/scope/internal/pgtest/value.go:", profile)
+                    for path in ["value.go:", "internal/pgtest/nested/value.go:",
+                                 "internal/pgtestextra/value.go:", "raceonly/value.go:"]:
+                        self.assertIn("example.com/scope/" + path, profile)
+                    events = [json.loads(line) for line in (root / (level + ".jsonl")).read_text().splitlines()]
+                    self.assertTrue(any(event["Action"] == "pass" and
+                                        event.get("Package") == "example.com/scope/internal/pgtest" and
+                                        event.get("Test") == "Test" + {"unit": "Unit", "integration": "Integration", "api": "API"}[level] + "Value"
+                                        for event in events), "excluded harness tests did not execute")
+
+    def test_empty_production_package_list_fails_before_collection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copyfile(MAKEFILE, root / "Makefile")
+            (root / "go.mod").write_text("module example.com/empty\n\ngo 1.26.0\n")
+            folder = root / "internal/pgtest"
+            folder.mkdir(parents=True)
+            (folder / "helper.go").write_text("package pgtest\nfunc Value() int { return 42 }\n")
+            (folder / "helper_test.go").write_text('package pgtest\nimport "testing"\nfunc TestUnitValue(t *testing.T) {}\n')
+            for level in ["unit", "integration", "api"]:
+                with self.subTest(level=level):
+                    status, output = self.run_make(root, "collect-" + level)
+                    self.assertNotEqual(status, 0, output)
+                    self.assertIn("No production packages remain for coverage.", output)
+                    self.assertFalse((root / (level + ".out")).exists())
+                    self.assertFalse((root / (level + ".jsonl")).exists())
+
 
 if __name__ == "__main__":
     unittest.main()

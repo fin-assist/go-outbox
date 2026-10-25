@@ -147,7 +147,10 @@ Also:
   wait on a channel or a condition with a deadline. Run with `-race`.
 - Tests assert behaviour; a test that only executes lines or asserts on a fake it set up itself is not coverage.
 - FIN-243 requires at least 80% of Go statements independently in unit, integration and consumer API suites.
-  All three use `-coverpkg=./...`, with the same complete denominator and no file/package exclusions.
+  All three derive the same `-coverpkg` list from `go list -race ./...`, excluding only the exact package
+  `<module>/internal/pgtest` by the owner's FIN-243 decision. Nested and similarly named packages remain included.
+  Tests still run against `./...`, including the harness tests. An empty instrumentation list fails collection.
+  No analyzer-only exclusions or other package/file exclusions are allowed.
   `go-test-coverage/v2` v2.20.1 enforces total80; its rounding accepts 79.95% as 80.0%.
   Combined coverage is an informational union, never a substitute for any individual gate.
 - Name tests/fuzz targets `TestUnit...`/`FuzzUnit...`, `TestIntegration...`/`FuzzIntegration...` or

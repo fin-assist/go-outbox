@@ -20,12 +20,15 @@ test-names: ## reject tests accidentally omitted from the three selectors
 	@if grep -E '^(Test|Fuzz)' test-names.txt | grep -Ev '^(Test|Fuzz)(Unit|Integration|API).+'; then \
 	  echo 'Name every test TestUnit..., TestIntegration... or TestAPI...' >&2; exit 1; fi
 
-# All suites instrument the same whole module. No production files are excluded.
+# All suites share Go's package inventory, excluding only the exact internal/pgtest harness package.
 # Ordinary packages without tests may be reported as skipped; skipped Test events fail.
 collect-unit collect-integration collect-api: test-names
 	@set -euo pipefail; level='$(@:collect-%=%)'; case "$$level" in unit) selector='^(Test|Fuzz)Unit';; integration) selector='^(Test|Fuzz)Integration';; api) selector='^((Test|Fuzz)API|Example)';; esac; \
 	rm -f "$$level.out" "$$level.jsonl"; \
-	CI=true go test -json -race -count=1 -timeout=8m -coverpkg=./... \
+	module=$$(go list -m); packages=$$(go list -race ./...); \
+	coverpkgs=$$(printf '%s\n' "$$packages" | awk -v excluded="$$module/internal/pgtest" '$$0 != excluded' | paste -sd, -); \
+	test -n "$$coverpkgs" || { echo 'No production packages remain for coverage.' >&2; exit 1; }; \
+	CI=true go test -json -race -count=1 -timeout=8m -coverpkg="$$coverpkgs" \
 	  -coverprofile="$$level.out" -run "$$selector" ./... | tee "$$level.jsonl"; \
 	bash scripts/check-suite.sh "$$level.jsonl" "$$level.out"
 
