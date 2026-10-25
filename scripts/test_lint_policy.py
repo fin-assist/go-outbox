@@ -36,13 +36,6 @@ def required_version(module, go_mod):
     return match[1] if match else None
 
 
-def module_version(module):
-    version = required_version(module, GO_MOD)
-    if version is None:
-        raise AssertionError(f"{module} is not in go.mod; pin it in PINNED instead")
-    return version
-
-
 def semver_key(version):
     """A sort key for a Go module version (vMAJOR.MINOR.PATCH[-pre][+build]); a release sorts above its prereleases."""
     match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?", version)
@@ -399,6 +392,10 @@ class PinTests(unittest.TestCase):
         self.assertEqual(pin("a.example/m", "v1.7.0", go_mod), "v1.7.0")  # go.mod below the manual pin
         self.assertEqual(pin("a.example/m", "v1.5.0", go_mod), "v1.5.0")
         self.assertEqual(pin("a.example/m", None, go_mod), "v1.5.0")
+        # The string order disagrees with semver here: pin must compare by semver_key.
+        self.assertEqual(pin("c.example/m", "v1.9.0", "require c.example/m v1.10.0\n"), "v1.10.0")
+        self.assertEqual(pin("c.example/m", "v1.10.0", "require c.example/m v1.9.0\n"), "v1.10.0")
+        self.assertEqual(pin("c.example/m", "v1.0.0-rc.1", "require c.example/m v1.0.0\n"), "v1.0.0")
         self.assertEqual(pin("b.example/m", "v0.3.0", go_mod), "v0.3.0")  # absent from go.mod
         with self.assertRaises(AssertionError):
             pin("b.example/m", None, go_mod)
