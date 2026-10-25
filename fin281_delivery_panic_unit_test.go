@@ -103,9 +103,11 @@ func TestUnitDeliverPanicNilWithLegacyGODEBUG(t *testing.T) {
 		}
 		return
 	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestUnitDeliverPanicNilWithLegacyGODEBUG$", "-test.count=1") //nolint:gosec // Re-executes the current test binary.
+	// Selecting by t.Name() and requiring this test's own PASS line keeps the guard from going
+	// silent ("no tests to run" also prints PASS) if the test is renamed.
+	cmd := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$", "-test.count=1", "-test.v") //nolint:gosec // Re-executes the current test binary.
 	cmd.Env = append(os.Environ(), "OUTBOX_PANICNIL_CHILD=1", "GODEBUG=panicnil=1")
-	if out, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(out), "PASS") {
+	if out, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(out), "--- PASS: "+t.Name()) {
 		t.Fatalf("child with panicnil=1 failed: %v\n%s", err, out)
 	}
 }
