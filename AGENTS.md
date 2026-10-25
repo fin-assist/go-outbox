@@ -39,7 +39,7 @@ for itself: what it does, its YouTrack issue, which services use it.
 | PostgreSQL for tests, up → down → up check | `internal/pgtest/`: only server selection; databases, file rules and the walk delegate to the tagged `go-migrate` (`migratetest`, `migrate.Validate`, `migrate.Up`; FIN-318) |
 | Integration guide for services | `README.md`, «Внедрение» |
 | Versions, compatibility, releases, Renovate | `docs/releasing.md`, `CHANGELOG.md`, `.github/workflows/release.yml`, `renovate.json` |
-| Suite execution/profile guards and native coverage policy, changelog checks | `scripts/` |
+| Suite execution/profile guards and native coverage policy, changelog checks, lint policy probe (`test_lint_policy.py`) and workflow hardening tests (`test_workflow_hardening.py`) | `scripts/` |
 | CI, lint | `.github/workflows/ci.yml`, `.golangci.yml`, `.squawk.toml`, `Makefile` |
 | PR review by Claude | `.github/workflows/claude.yml` |
 
@@ -96,14 +96,17 @@ The same priorities and rules as the services (`AGENTS.md` of `fin-assist/go-ser
   package-level mutable variables, no reading the environment; `forbidigo` rejects outside tests and `internal/pgtest`
   the default loggers (`fmt.Print*`, `print`, package-level `slog`/`log`, `log.Default`/`SetOutput`, the global
   `grpclog` functions), the default metrics registry (`prometheus.MustRegister`/`Register`/`Unregister`/
-  `DefaultRegisterer`/`DefaultGatherer`, `promauto.New*`, `promhttp.Handler`), default HTTP and OpenTelemetry
-  globals (`http.DefaultClient`, `http.Get`, `http.Handle`, `otel.Get*`/`Set*`/`Tracer`/`Meter`/`Handle`,
+  `DefaultRegisterer`/`DefaultGatherer`, `promauto.New*`, `promhttp.Handler`), default HTTP, gRPC and OpenTelemetry
+  globals (`http.DefaultClient`, `http.Get`, `http.Handle`, `http.Serve`/`ServeTLS`, `http.ProxyFromEnvironment`,
+  the grpc-go registries `encoding.RegisterCodec`/`RegisterCodecV2`/`RegisterCompressor`, `resolver.Register`/
+  `SetDefaultScheme`, `balancer.Register` and `grpc.EnableTracing`, `otel.Get*`/`Set*`/`Tracer`/`Meter`/`Handle`,
   `otel/log/global`), `os/signal` and the environment (`os.Getenv` and the rest of the family, `os.Args`,
-  `os.User*Dir`, `syscall` and `golang.org/x/sys/unix|windows` env calls, Win32 included). By the owner's decision it
+  `os.User*Dir`, `syscall` and `golang.org/x/sys/unix|windows` env calls, Win32 included: `GetEnvironmentStrings`,
+  `ExpandEnvironmentStrings`, `CreateEnvironmentBlock`, `Token.Environ`). By the owner's decision it
   also rejects package-level `flag` functions and `flag.CommandLine` (a passed `*flag.FlagSet` from `flag.NewFlagSet`
   stays allowed), `os.Stdout`/`os.Stderr`/`os.Stdin` (take an `io.Writer`/`io.Reader`), `runtime/debug.Set*`,
   `runtime.GOMAXPROCS`/`SetDefaultGOMAXPROCS` and changing the working directory (`os.Chdir`, `(*os.File).Chdir`,
-  `syscall`/`x/sys` `Chdir`/`Fchdir`/`SetCurrentDirectory`). A library takes a pool or worker count from the service's
+  `syscall`/`x/sys` `Chdir`/`Fchdir`/`SetCurrentDirectory`) or the umask (`syscall.Umask`, `unix.Umask`). A library takes a pool or worker count from the service's
   options; a read-only `runtime.GOMAXPROCS(0)` as the default of such an option carries `//nolint:forbidigo` with
   the reason «read-only». `os.TempDir`, `os.CreateTemp` and `os.MkdirTemp` are rejected entirely: with an empty `dir`
   they use the process-wide temp directory and lint cannot tell an empty argument from a passed one, so a library

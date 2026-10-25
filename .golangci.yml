@@ -56,9 +56,24 @@ linters:
         - pattern: ^promhttp\.Handler$
           pkg: ^github\.com/prometheus/client_golang/prometheus/promhttp$
           msg: serve the registry the service passes in (promhttp.HandlerFor)
-        - pattern: ^http\.(DefaultClient|DefaultTransport|DefaultServeMux|Handle|HandleFunc|Get|Head|Post|PostForm|ListenAndServe|ListenAndServeTLS)$
+        # ProxyFromEnvironment reads the proxy variables once and caches them for the whole process.
+        - pattern: ^http\.(DefaultClient|DefaultTransport|DefaultServeMux|Handle|HandleFunc|Get|Head|Post|PostForm|ListenAndServe|ListenAndServeTLS|Serve|ServeTLS|ProxyFromEnvironment)$
           pkg: ^net/http$
-          msg: take the *http.Client or the handler from the service
+          msg: take the *http.Client, its Transport or the handler from the service
+        # grpc-go keeps process-wide registries of codecs, compressors, resolvers and balancers; a library
+        # passes its choice per connection or call (grpc.WithResolvers, grpc.ForceCodecV2, ...).
+        - pattern: ^encoding\.(RegisterCodec|RegisterCodecV2|RegisterCompressor)$
+          pkg: ^google\.golang\.org/grpc/encoding$
+          msg: process-wide gRPC registry; pass the codec or compressor per connection or call
+        - pattern: ^resolver\.(Register|SetDefaultScheme)$
+          pkg: ^google\.golang\.org/grpc/resolver$
+          msg: process-wide gRPC registry; pass the resolver with grpc.WithResolvers
+        - pattern: ^balancer\.Register$
+          pkg: ^google\.golang\.org/grpc/balancer$
+          msg: process-wide gRPC registry; the service registers balancers
+        - pattern: ^grpc\.EnableTracing$
+          pkg: ^google\.golang\.org/grpc$
+          msg: process-wide gRPC switch; tracing is the service's decision
         - pattern: ^otel\.(Get.+|Set.+|Tracer|Meter|Handle)$
           pkg: ^go\.opentelemetry\.io/otel$
           msg: take the provider from the service
@@ -98,11 +113,23 @@ linters:
         - pattern: ^(unix|windows)\.(Chdir|Fchdir|SetCurrentDirectory)$
           pkg: ^golang\.org/x/sys/(unix|windows)$
           msg: the working directory is process-wide; use paths relative to a directory the service passes
+        # The file mode creation mask is process-wide, like the working directory (unix only).
+        - pattern: ^syscall\.Umask$
+          pkg: ^syscall$
+          msg: the umask is process-wide; set file modes explicitly (os.OpenFile, os.Chmod)
+        - pattern: ^unix\.Umask$
+          pkg: ^golang\.org/x/sys/unix$
+          msg: the umask is process-wide; set file modes explicitly (os.OpenFile, os.Chmod)
         - pattern: ^syscall\.(Getenv|Environ|Setenv|Unsetenv|Clearenv|GetEnvironmentVariable|SetEnvironmentVariable|GetEnvironmentStrings)$
           pkg: ^syscall$
           msg: a library takes its settings from the service, not from the environment
         - pattern: ^(unix|windows)\.(Getenv|Environ|Setenv|Unsetenv|Clearenv|GetEnvironmentVariable|SetEnvironmentVariable)$
           pkg: ^golang\.org/x/sys/(unix|windows)$
+          msg: a library takes its settings from the service, not from the environment
+        # Win32 reads of the whole process environment: the block, %VAR% expansion, and a new block (or
+        # Token.Environ) that inherits it. FreeEnvironmentStrings and DestroyEnvironmentBlock only release memory.
+        - pattern: ^windows\.(GetEnvironmentStrings|ExpandEnvironmentStrings|CreateEnvironmentBlock|Token\.Environ)$
+          pkg: ^golang\.org/x/sys/windows$
           msg: a library takes its settings from the service, not from the environment
     depguard:
       # No frameworks, ORMs, DI containers; the standard library first (AGENTS.md, «Principles»).

@@ -108,7 +108,12 @@ FORBIDDEN = {
                                "NewSummaryVec", "NewUntypedFunc"],
     PROMETHEUS + "/promhttp": ["Handler"],
     "net/http": ["DefaultClient", "DefaultTransport", "DefaultServeMux", "Handle", "HandleFunc", "Get", "Head",
-                 "Post", "PostForm", "ListenAndServe", "ListenAndServeTLS"],
+                 "Post", "PostForm", "ListenAndServe", "ListenAndServeTLS", "Serve", "ServeTLS",
+                 "ProxyFromEnvironment"],
+    "google.golang.org/grpc": ["EnableTracing"],
+    "google.golang.org/grpc/encoding": ["RegisterCodec", "RegisterCodecV2", "RegisterCompressor"],
+    "google.golang.org/grpc/resolver": ["Register", "SetDefaultScheme"],
+    "google.golang.org/grpc/balancer": ["Register"],
     "go.opentelemetry.io/otel": ["GetTracerProvider", "SetTracerProvider", "GetMeterProvider",
                                  "SetMeterProvider", "GetTextMapPropagator", "SetTextMapPropagator",
                                  "SetErrorHandler", "GetErrorHandler", "SetLogger", "Tracer", "Meter",
@@ -128,11 +133,13 @@ FORBIDDEN = {
     "runtime": ["GOMAXPROCS", "SetDefaultGOMAXPROCS"],
 }
 PLATFORM = {
-    "unix": {"golang.org/x/sys/unix": ["Getenv", "Environ", "Setenv", "Unsetenv", "Clearenv", "Chdir", "Fchdir"],
-             "syscall": ["Fchdir"]},
+    "unix": {"golang.org/x/sys/unix": ["Getenv", "Environ", "Setenv", "Unsetenv", "Clearenv", "Chdir", "Fchdir",
+                                          "Umask"],
+             "syscall": ["Fchdir", "Umask"]},
     "windows": {"golang.org/x/sys/windows": ["Getenv", "Environ", "Setenv", "Unsetenv", "Clearenv",
-                                             "GetEnvironmentVariable", "SetEnvironmentVariable", "Chdir",
-                                             "SetCurrentDirectory"],
+                                             "GetEnvironmentVariable", "SetEnvironmentVariable", "GetEnvironmentStrings",
+                                             "ExpandEnvironmentStrings", "CreateEnvironmentBlock", "Token.Environ",
+                                             "Chdir", "SetCurrentDirectory"],
                 "syscall": ["GetEnvironmentVariable", "SetEnvironmentVariable", "GetEnvironmentStrings",
                             "SetCurrentDirectory"]},
 }
@@ -203,7 +210,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/balancer"
+	"google.golang.org/grpc/encoding"
 	"google.golang.org/grpc/grpclog"
+	"google.golang.org/grpc/resolver"
 )
 
 // GRPCLogger is an adapter a library may export; the service installs it with SetLoggerV2.
@@ -250,6 +261,14 @@ func Allowed(ctx context.Context, l *slog.Logger, reg prometheus.Registerer, c p
 	mux := http.NewServeMux()
 	mux.Handle("/", h)
 	_, _ = client.Get("http://example.invalid")
+	server := &http.Server{Handler: mux}
+	_ = server.Serve
+	_ = server.ServeTLS
+	_ = &http.Transport{Proxy: http.ProxyURL(nil)}
+	_, _ = grpc.NewClient("passthrough:///x", grpc.WithResolvers(resolver.Get("passthrough")))
+	_ = encoding.GetCodecV2("proto")
+	_ = encoding.GetCompressor("gzip")
+	_ = balancer.Get("round_robin")
 	_, _ = os.ReadFile("x")
 	_ = os.Expand("$A", func(string) string { return "" })
 	_ = fmt.Sprintf("x")
