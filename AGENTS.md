@@ -59,6 +59,10 @@ the PR with why it is needed: every service that imports the library inherits it
   point the tests at it: `TEST_DATABASE_URL='postgres://postgres@localhost:<port>/postgres?sslmode=disable' make test`.
   Without either, integration tests are skipped locally and fail in CI (`CI` set) — a skip is not a pass.
 - `make lint` and `make api` run the pinned tools through `go run`; no separate install.
+- The script tests need PyYAML (`python3-yaml`, or `pip install pyyaml`): `scripts/test_workflow_hardening.py` parses
+  the workflows with `yaml.safe_load` and fails without it. `scripts/test_lint_policy.py` also builds the pinned
+  golangci-lint and downloads the probe's pinned modules (prometheus, grpc, otel, x/sys; versions in the script or from
+  `go.mod`), so it needs the module proxy.
 - `make cover` needs the `covdata` tool, which a toolchain downloaded by `GOTOOLCHAIN` lacks ("no such tool
   covdata"): build it once with `T=$(go env GOTOOLDIR); chmod u+w "$T"; go build -o "$T/covdata" cmd/covdata`.
 - Every test or lint run gets a timeout (`timeout 600 make test` or the tool's own): a hung run blocks the session.
@@ -89,8 +93,36 @@ The same priorities and rules as the services (`AGENTS.md` of `fin-assist/go-ser
   (inside a transaction, on the primary, after the identity interceptor) and which errors come back.
 - **No process-wide state.** The service passes everything in: `*slog.Logger`, `prometheus.Registerer`, the clock
   (`func() time.Time`), settings in an options struct with documented defaults. No `init()` with side effects, no
-  package-level mutable variables, no reading the environment; `forbidigo` rejects `slog.Default`, `log.Print*`,
-  `prometheus.MustRegister`, `promauto` and `os.Getenv` outside tests.
+  package-level mutable variables, no reading the environment; `forbidigo` rejects outside tests and `internal/pgtest`
+  the default loggers (`fmt.Print*`, `print`, package-level `slog`/`log`, `log.Default`/`SetOutput`, the global
+  `grpclog` functions), the default metrics registry (`prometheus.MustRegister`/`Register`/`Unregister`/
+  `DefaultRegisterer`/`DefaultGatherer`, `promauto.New*`, `promhttp.Handler`), default HTTP and OpenTelemetry
+  globals (`http.DefaultClient`, `http.Get`, `http.Handle`, `otel.Get*`/`Set*`/`Tracer`/`Meter`/`Handle`,
+  `otel/log/global`), `os/signal` and the environment (`os.Getenv` and the rest of the family, `os.Args`,
+  `os.User*Dir`, `syscall` and `golang.org/x/sys/unix|windows` env calls, Win32 included). By the owner's decision it
+  also rejects package-level `flag` functions and `flag.CommandLine` (a passed `*flag.FlagSet` from `flag.NewFlagSet`
+  stays allowed), `os.Stdout`/`os.Stderr`/`os.Stdin` (take an `io.Writer`/`io.Reader`), `runtime/debug.Set*`,
+  `runtime.GOMAXPROCS`/`SetDefaultGOMAXPROCS` and changing the working directory (`os.Chdir`, `(*os.File).Chdir`,
+  `syscall`/`x/sys` `Chdir`/`Fchdir`/`SetCurrentDirectory`). A library takes a pool or worker count from the service's
+  options; a read-only `runtime.GOMAXPROCS(0)` as the default of such an option carries `//nolint:forbidigo` with
+  the reason «read-only». `os.TempDir`, `os.CreateTemp` and `os.MkdirTemp` are rejected entirely: with an empty `dir`
+  they use the process-wide temp directory and lint cannot tell an empty argument from a passed one, so a library
+  takes the directory from the service and creates files in it (`os.OpenFile`, `os.Mkdir`); a deliberate
+  `CreateTemp(dir, …)` with a validated non-empty `dir` from the caller carries a `//nolint:forbidigo` with that
+  reason. `depguard` rejects even a
+  blank import of `expvar`, `net/http/pprof` and `golang.org/x/net/trace` (handlers on `http.DefaultServeMux` in
+  `init`), `google.golang.org/grpc/grpclog/glogger` (replaces the gRPC logger in `init`), `github.com/golang/glog`,
+  `k8s.io/klog`, `go.uber.org/automaxprocs` and `github.com/KimMachineGun/automemlimit` (runtime tuning in `init`). Injected forms stay allowed: `promauto.With(reg)`, `promhttp.HandlerFor`,
+  `InstrumentMetricHandler(reg, …)`, `grpclog.LoggerV2` and `NewLoggerV2*` for an adapter the service installs,
+  methods of a passed `*slog.Logger`, `Registerer`, `*http.Client`, `TracerProvider` or `MeterProvider`.
+  `scripts/test_lint_policy.py` runs the pinned linter (version from `Makefile`, equal to `ci.yml`) on a hermetic probe
+  module with pinned dependencies, for linux and windows: every forbidden and allowed form, chains such as
+  `prometheus.DefaultRegisterer.MustRegister(c)` or `log.Default().Printf` and an aliased import are reported by their
+  first identifier.
+  Lint cannot see options: a library always passes the providers explicitly (`otelhttp`/`otelgrpc` with
+  `WithTracerProvider`/`WithMeterProvider`; without them they take the global ones). grpc-go itself imports
+  `golang.org/x/net/trace` unless built with the `grpcnotrace` tag; that is the service's build decision. The probe's
+  pinned versions outside `go.mod` (`PINNED` in the script) are raised by hand: Renovate does not read them.
 - **The service owns the transaction.** A library that writes together with the effect (idempotency, outbox,
   tombstone) takes it through a consumer interface — `interface{ Tx(context.Context) (pgx.Tx, bool) }`, implemented
   by `postgres.DB` of the service template — and returns an error when there is none, instead of writing outside it.
@@ -168,6 +200,10 @@ module tidiness, vet, script and changelog checks, then independently collects a
 Each collection/check outcome must succeed. `api` remains the gorelease compatibility check, distinct from API tests.
 Existing migration, lint, release and Renovate checks retain their purpose.
 
+Workflows: every `actions/checkout` except `release.yml` and `claude.yml` sets `persist-credentials: false`, and a
+`run:` script reads branch names and event fields from `env:`, never from `${{ … }}` in its text (FIN-301,
+`scripts/test_workflow_hardening.py`, which checks the values decoded by PyYAML in `*.yml` and `*.yaml`).
+
 ### Coverage reports (FIN-243)
 
 `make cover-unit`, `make cover-integration` and `make cover-api` collect fresh `*.out` and `*.jsonl` files and enforce
@@ -230,8 +266,11 @@ updates the library.
   mandatory rules, then performance; a performance finding needs a measurement or an evident cost, not a guess.
 - Post each finding as an inline comment on the changed line. The summary lists what was checked, with a
   «Безопасность», a «Тесты» and a «Совместимость» part; «not affected» is a valid answer, with one line why.
-- Check that the PR references its YouTrack issue, adds its `CHANGELOG.md` line (including CI-only changes),
-  and updates `README.md` («Внедрение»), this file and `docs/` when it changes what they describe.
+- Check that the PR references its YouTrack issue, adds its `CHANGELOG.md` line including docs/test/CI-only changes
+  (except bot-only dependency PRs of Renovate, FIN-211). A release PR checks the whole `git diff <last tag> -- go.mod`:
+  every raised `go` directive or major of a shared dependency has a «Несовместимо» line, from its PR or added by the
+  release PR; undescribed Renovate changes (`git log -p <last tag>..HEAD -- go.mod`) go under «Изменено». Also check
+  that the PR updates `README.md` («Внедрение»), this file and `docs/` when it changes what they describe.
 
 ### Security
 
@@ -291,7 +330,8 @@ identifier, behaviour, migration and dependency check:
 ### Checklist
 
 - New code has unit tests; new functionality has integration tests; entry points have usage tests and examples.
-- API or behaviour changed — a `CHANGELOG.md` line; incompatible — under «Несовместимо», and the PR says so.
+- Every PR has a `CHANGELOG.md` line, except bot-only Renovate dependency PRs (summarised by the release PR);
+  incompatible — under «Несовместимо», and the PR says so.
 - A new client-facing error goes through `finerr`; a new reason or metadata key exists in `contracts` first.
 - A new query by a key is scoped by its owner and has a test with another owner's key.
 - A write that goes with an effect uses the service's transaction and fails without one.

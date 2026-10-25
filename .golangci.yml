@@ -31,24 +31,104 @@ linters:
           msg: ErrorInfo is built only by finerr (grpc-api.md 5.2)
         - pattern: ^grpc\.Errorf$
           msg: build errors with finerr (grpc-api.md 5.2)
+        # A custom forbid list replaces forbidigo's default one: keep its print rules.
+        - pattern: ^(fmt\.Print(|f|ln)|print|println)$
+          msg: take a *slog.Logger from the service
         # A library never reaches for process-wide state: the service passes the logger, the
-        # metrics registry and the settings in (AGENTS.md, «Writing code»).
-        - pattern: ^slog\.(Default|SetDefault|Debug|Info|Warn|Error|Log)(Context|Attrs)?$
+        # metrics registry, the HTTP client and the settings in (AGENTS.md, «Writing code»).
+        # scripts/test_lint_policy.py runs this linter on a probe of every forbidden and allowed form.
+        - pattern: ^slog\.(Default|SetDefault|SetLogLoggerLevel|Debug|DebugContext|Info|InfoContext|Warn|WarnContext|Error|ErrorContext|Log|LogAttrs)$
           pkg: ^log/slog$
           msg: take a *slog.Logger from the service
-        - pattern: ^log\.(Print|Fatal|Panic)(f|ln)?$
+        - pattern: ^log\.(Print|Printf|Println|Fatal|Fatalf|Fatalln|Panic|Panicf|Panicln|Default|Writer|SetOutput|SetFlags|SetPrefix|Flags|Prefix|Output)$
           pkg: ^log$
           msg: take a *slog.Logger from the service
-        - pattern: ^(prometheus\.(MustRegister|Register)|promauto\.New.*)$
+        # Only the functions that write to or replace the global logger: types and NewLoggerV2* stay allowed.
+        - pattern: ^grpclog\.(Info|Infof|Infoln|InfoDepth|Warning|Warningf|Warningln|WarningDepth|Error|Errorf|Errorln|ErrorDepth|Fatal|Fatalf|Fatalln|FatalDepth|Print|Printf|Println|V|Component|SetLogger|SetLoggerV2)$
+          pkg: ^google\.golang\.org/grpc/grpclog$
+          msg: take a *slog.Logger from the service
+        - pattern: ^prometheus\.(MustRegister|Register|Unregister|DefaultRegisterer|DefaultGatherer)$
+          pkg: ^github\.com/prometheus/client_golang/prometheus$
           msg: register metrics on the prometheus.Registerer the service passes in
-        - pattern: ^os\.(Getenv|LookupEnv|Environ)$
+        - pattern: ^promauto\.New.+$
+          pkg: ^github\.com/prometheus/client_golang/prometheus/promauto$
+          msg: register metrics on the prometheus.Registerer the service passes in
+        - pattern: ^promhttp\.Handler$
+          pkg: ^github\.com/prometheus/client_golang/prometheus/promhttp$
+          msg: serve the registry the service passes in (promhttp.HandlerFor)
+        - pattern: ^http\.(DefaultClient|DefaultTransport|DefaultServeMux|Handle|HandleFunc|Get|Head|Post|PostForm|ListenAndServe|ListenAndServeTLS)$
+          pkg: ^net/http$
+          msg: take the *http.Client or the handler from the service
+        - pattern: ^otel\.(Get.+|Set.+|Tracer|Meter|Handle)$
+          pkg: ^go\.opentelemetry\.io/otel$
+          msg: take the provider from the service
+        - pattern: ^global\.(GetLoggerProvider|SetLoggerProvider|Logger)$
+          pkg: ^go\.opentelemetry\.io/otel/log/global$
+          msg: take the provider from the service
+        - pattern: ^signal\.(Notify|NotifyContext|Ignore|Reset|Stop)$
+          pkg: ^os/signal$
+          msg: signal handling belongs to the service's main
+        - pattern: ^os\.(Getenv|LookupEnv|Environ|ExpandEnv|Setenv|Unsetenv|Clearenv|Args|UserHomeDir|UserConfigDir|UserCacheDir)$
           pkg: ^os$
+          msg: a library takes its settings from the service, not from the environment
+        # Owner decision (FIN-294): flags, standard streams, the temp directory, runtime tuning and the
+        # working directory belong to the service; a library takes them as parameters.
+        - pattern: ^flag\.(Arg|Args|Bool|BoolFunc|BoolVar|CommandLine|Duration|DurationVar|Float64|Float64Var|Func|Int|Int64|Int64Var|IntVar|Lookup|NArg|NFlag|Parse|Parsed|PrintDefaults|Set|String|StringVar|TextVar|Uint|Uint64|Uint64Var|UintVar|Usage|Var|Visit|VisitAll)$
+          pkg: ^flag$
+          msg: the service parses flags; take a *flag.FlagSet (flag.NewFlagSet) or the values
+        - pattern: ^os\.(Stdout|Stderr|Stdin)$
+          pkg: ^os$
+          msg: take an io.Writer / io.Reader or a *slog.Logger from the service
+        - pattern: ^os\.(TempDir|CreateTemp|MkdirTemp)$
+          pkg: ^os$
+          msg: take the directory from the service; lint cannot tell an empty dir from a passed one (AGENTS.md)
+        # (*os.File).Chdir matches as os.File.Chdir with analyze-types.
+        - pattern: ^os\.(Chdir|File\.Chdir)$
+          pkg: ^os$
+          msg: the working directory is process-wide; use paths relative to a directory the service passes
+        - pattern: ^debug\.Set.+$
+          pkg: ^runtime/debug$
+          msg: runtime tuning is process-wide and belongs to the service's main
+        - pattern: ^runtime\.(GOMAXPROCS|SetDefaultGOMAXPROCS)$
+          pkg: ^runtime$
+          msg: take the pool size from the service's options; a read-only GOMAXPROCS(0) default needs nolint with the reason (AGENTS.md)
+        - pattern: ^syscall\.(Chdir|Fchdir|SetCurrentDirectory)$
+          pkg: ^syscall$
+          msg: the working directory is process-wide; use paths relative to a directory the service passes
+        - pattern: ^(unix|windows)\.(Chdir|Fchdir|SetCurrentDirectory)$
+          pkg: ^golang\.org/x/sys/(unix|windows)$
+          msg: the working directory is process-wide; use paths relative to a directory the service passes
+        - pattern: ^syscall\.(Getenv|Environ|Setenv|Unsetenv|Clearenv|GetEnvironmentVariable|SetEnvironmentVariable|GetEnvironmentStrings)$
+          pkg: ^syscall$
+          msg: a library takes its settings from the service, not from the environment
+        - pattern: ^(unix|windows)\.(Getenv|Environ|Setenv|Unsetenv|Clearenv|GetEnvironmentVariable|SetEnvironmentVariable)$
+          pkg: ^golang\.org/x/sys/(unix|windows)$
           msg: a library takes its settings from the service, not from the environment
     depguard:
       # No frameworks, ORMs, DI containers; the standard library first (AGENTS.md, «Principles»).
       rules:
         main:
           deny:
+            # Imported even blank, these register handlers on http.DefaultServeMux in init.
+            - pkg: expvar
+              desc: expvar is a process-wide registry published on http.DefaultServeMux; export metrics through the service's registerer
+            - pkg: net/http/pprof
+              desc: registers /debug/pprof on http.DefaultServeMux in init; the service mounts pprof itself
+            - pkg: golang.org/x/net/trace
+              desc: registers /debug/requests on http.DefaultServeMux in init
+            # Global loggers: glogger replaces the gRPC logger in init; glog/klog register flags and write to os.TempDir.
+            # depguard matches a prefix, so k8s.io/klog covers k8s.io/klog/v2.
+            - pkg: google.golang.org/grpc/grpclog/glogger
+              desc: calls grpclog.SetLoggerV2 in init; the service installs the gRPC logger
+            - pkg: github.com/golang/glog
+              desc: global logger with flags and files in os.TempDir; use log/slog
+            - pkg: k8s.io/klog
+              desc: global logger with flags; use log/slog
+            # Change GOMAXPROCS and the memory limit in init (runtime tuning belongs to the service's main).
+            - pkg: go.uber.org/automaxprocs
+              desc: sets GOMAXPROCS in init and logs through the standard logger
+            - pkg: github.com/KimMachineGun/automemlimit
+              desc: sets the runtime memory limit in init
             - pkg: github.com/gin-gonic/gin
               desc: no web frameworks, use net/http
             - pkg: github.com/labstack/echo

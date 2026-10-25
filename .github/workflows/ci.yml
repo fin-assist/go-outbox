@@ -39,6 +39,9 @@ jobs:
         run: go vet ./...
       - name: Test names cover all selectors
         run: make test-names
+      # scripts/test_workflow_hardening.py parses workflows with PyYAML (preinstalled on ubuntu runners).
+      - name: Script dependencies
+        run: python3 -c 'import yaml' || { echo 'PyYAML is required for the script tests (python3-yaml).' >&2; exit 1; }
       - name: Test the scripts
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: CHANGELOG.md format
@@ -122,6 +125,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -149,6 +154,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # tags
+          persist-credentials: false
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -190,15 +196,19 @@ jobs:
   migrations:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    env:
+      # Passed through the environment, never expanded into the script text.
+      BASE_REF: ${{ github.base_ref }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
       # A released migration runs in every service that updated the library: it is never
       # edited; a change goes into a new file.
       - name: Existing migrations are unchanged
         run: |
-          changed=$(git diff --name-only --diff-filter=MDR "origin/${{ github.base_ref }}...HEAD" -- 'migrations/*.sql')
+          changed=$(git diff --name-only --diff-filter=MDR "origin/$BASE_REF...HEAD" -- 'migrations/*.sql')
           if [ -n "$changed" ]; then
             echo "Existing migrations were modified, renamed or deleted:"
             echo "$changed"
@@ -211,7 +221,7 @@ jobs:
       # Squawk lints the new up files; down files are checked by the up -> down -> up test.
       - name: Squawk
         run: |
-          files=$(git diff --name-only --diff-filter=A "origin/${{ github.base_ref }}...HEAD" -- 'migrations/*.up.sql')
+          files=$(git diff --name-only --diff-filter=A "origin/$BASE_REF...HEAD" -- 'migrations/*.up.sql')
           if [ -z "$files" ]; then
             echo "No new migrations."
             exit 0
