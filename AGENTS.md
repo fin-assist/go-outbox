@@ -98,7 +98,7 @@ The same priorities and rules as the services (`AGENTS.md` of `fin-assist/go-ser
   `grpclog` functions), the default metrics registry (`prometheus.MustRegister`/`Register`/`Unregister`/
   `DefaultRegisterer`/`DefaultGatherer`, `promauto.New*`, `promhttp.Handler`), default HTTP, gRPC and OpenTelemetry
   globals (`http.DefaultClient`, `http.Get`, `http.Handle`, `http.Serve`/`ServeTLS`, `http.ProxyFromEnvironment`,
-  the grpc-go registries `encoding.RegisterCodec`/`RegisterCodecV2`/`RegisterCompressor`, `resolver.Register`/
+  `x/net/http/httpproxy.FromEnvironment`, the grpc-go `binarylog.SetSink`, `encoding/gzip.SetLevel` and registries `encoding.RegisterCodec`/`RegisterCodecV2`/`RegisterCompressor`, `resolver.Register`/
   `SetDefaultScheme`, `balancer.Register` and `grpc.EnableTracing`, `otel.Get*`/`Set*`/`Tracer`/`Meter`/`Handle`,
   `otel/log/global`), `os/signal` and the environment (`os.Getenv` and the rest of the family, `os.Args`,
   `os.User*Dir`, `syscall` and `golang.org/x/sys/unix|windows` env calls, Win32 included: `GetEnvironmentStrings`,
@@ -106,7 +106,10 @@ The same priorities and rules as the services (`AGENTS.md` of `fin-assist/go-ser
   also rejects package-level `flag` functions and `flag.CommandLine` (a passed `*flag.FlagSet` from `flag.NewFlagSet`
   stays allowed), `os.Stdout`/`os.Stderr`/`os.Stdin` (take an `io.Writer`/`io.Reader`), `runtime/debug.Set*`,
   `runtime.GOMAXPROCS`/`SetDefaultGOMAXPROCS` and changing the working directory (`os.Chdir`, `(*os.File).Chdir`,
-  `syscall`/`x/sys` `Chdir`/`Fchdir`/`SetCurrentDirectory`) or the umask (`syscall.Umask`, `unix.Umask`). A library takes a pool or worker count from the service's
+  `syscall`/`x/sys` `Chdir`/`Fchdir`/`SetCurrentDirectory`), the root and the DLL search path (`Chroot`,
+  `SetDllDirectory`/`SetDefaultDllDirectories`), the umask and resource limits (`Umask`, `Setrlimit`, `unix.Prlimit`)
+  and the `syscall`/`x/sys` forms of the standard streams, temp directory and command line (`Stdin`/`Stdout`/`Stderr`,
+  `GetStdHandle`/`SetStdHandle`, `GetTempPath`, `GetCommandLine`/`CommandLineToArgv`). A library takes a pool or worker count from the service's
   options; a read-only `runtime.GOMAXPROCS(0)` as the default of such an option carries `//nolint:forbidigo` with
   the reason «read-only». `os.TempDir`, `os.CreateTemp` and `os.MkdirTemp` are rejected entirely: with an empty `dir`
   they use the process-wide temp directory and lint cannot tell an empty argument from a passed one, so a library
@@ -115,19 +118,25 @@ The same priorities and rules as the services (`AGENTS.md` of `fin-assist/go-ser
   reason. `depguard` rejects even a
   blank import of `expvar`, `net/http/pprof` and `golang.org/x/net/trace` (handlers on `http.DefaultServeMux` in
   `init`), `google.golang.org/grpc/grpclog/glogger` (replaces the gRPC logger in `init`), `github.com/golang/glog`,
-  `k8s.io/klog`, `go.uber.org/automaxprocs` and `github.com/KimMachineGun/automemlimit` (runtime tuning in `init`). Injected forms stay allowed: `promauto.With(reg)`, `promhttp.HandlerFor`,
+  `k8s.io/klog`, `go.uber.org/automaxprocs` and `github.com/KimMachineGun/automemlimit` (runtime tuning in `init`),
+  `google.golang.org/grpc/xds` (registers resolvers and balancers in `init`, reads the environment) and the whole
+  `net/http/cgi` and `net/http/fcgi` (serve `http.DefaultServeMux` for a nil handler; cgi reads the environment). Injected forms stay allowed: `promauto.With(reg)`, `promhttp.HandlerFor`,
   `InstrumentMetricHandler(reg, …)`, `grpclog.LoggerV2` and `NewLoggerV2*` for an adapter the service installs,
   methods of a passed `*slog.Logger`, `Registerer`, `*http.Client`, `TracerProvider` or `MeterProvider`.
   `scripts/test_lint_policy.py` runs the pinned linter (version from `Makefile`, equal to `ci.yml`) on a hermetic probe
   module with pinned dependencies, for linux and windows: every forbidden and allowed form, chains such as
   `prometheus.DefaultRegisterer.MustRegister(c)` or `log.Default().Printf` and an aliased import are reported by their
-  first identifier.
+  first identifier. The list is a best-effort denylist, not a proof: a newly found path to process-wide state is
+  closed when it is found, in `go-library-template` first and then in the libraries.
   Lint cannot see options: a library always passes the providers explicitly (`otelhttp`/`otelgrpc` with
-  `WithTracerProvider`/`WithMeterProvider`; without them they take the global ones). grpc-go itself imports
+  `WithTracerProvider`/`WithMeterProvider`; without them they take the global ones), sets `Transport` on an
+  `&http.Client{}` (an empty one uses `http.DefaultTransport` and so `ProxyFromEnvironment`) and `Handler` on an
+  `&http.Server{}` (an empty one serves `http.DefaultServeMux`). grpc-go itself imports
   `golang.org/x/net/trace` unless built with the `grpcnotrace` tag; that is the service's build decision. The probe's
-  pinned versions outside `go.mod` (`PINNED` in the script) are raised by hand: Renovate does not read them;
-  `go mod tidy` of the probe may raise them (a newer grpc or otel from `go.mod` can require it), never lower them,
-  while versions taken from `go.mod` must stay exact.
+  manual pins (`MANUAL` in the script) are raised by hand: Renovate does not read them. A module that `go.mod`
+  requires is pinned at the higher of `go.mod` and its manual pin and must stay exactly there after `go mod tidy`;
+  a manual pin of a module absent from `go.mod` may be raised by tidy (a newer grpc or otel can require it), never
+  lowered.
 - **The service owns the transaction.** A library that writes together with the effect (idempotency, outbox,
   tombstone) takes it through a consumer interface — `interface{ Tx(context.Context) (pgx.Tx, bool) }`, implemented
   by `postgres.DB` of the service template — and returns an error when there is none, instead of writing outside it.

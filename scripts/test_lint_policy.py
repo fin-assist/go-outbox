@@ -55,11 +55,23 @@ def semver_key(version):
     return (int(match[1]), int(match[2]), int(match[3]), pre is None, identifiers)
 
 
+def pin(module, manual=None, go_mod=GO_MOD):
+    """The probe version of module: max(go.mod, manual) when go.mod requires it, else the manual pin."""
+    required = required_version(module, go_mod)
+    if required is None:
+        if manual is None:
+            raise AssertionError(f"{module} is not in go.mod; give it a manual pin")
+        return manual
+    if manual is None:
+        return required
+    return max(required, manual, key=semver_key)
+
+
 def pin_violation(module, pinned, resolved, exact):
     """Why the version tidy resolved breaks the pin, or None.
 
-    A version taken from go.mod must stay exact: the probe checks the libraries' own dependency. A hand pin
-    absent from go.mod may be raised by tidy (a newer grpc from Renovate can need a newer otel/log), never lowered.
+    A module present in go.mod must stay exactly at its pin (max of go.mod and the manual pin): the probe checks
+    the libraries' own dependency. A hand pin absent from go.mod may be raised by tidy (a newer grpc from Renovate can need a newer otel/log), never lowered.
     """
     if resolved is None:
         return f"tidy dropped the pinned {module}"
@@ -71,24 +83,29 @@ def pin_violation(module, pinned, resolved, exact):
 
 
 # The probe is hermetic: every module it compiles is pinned, so an upstream release cannot break CI.
-# Versions present in go.mod follow it exactly (Renovate updates them there). Renovate does not read the
-# other constants below: they are raised by hand in a reviewed PR, when the libraries or services move to a
-# new otel/log/klog/automaxprocs/automemlimit release, or when the probe needs an API that only a newer release has.
-# tidy may raise such a hand pin (a newer grpc or otel from go.mod can require it), never lower it (pin_violation).
+# Versions present in go.mod follow it (Renovate updates them there); a manual pin of such a module only raises
+# it (pin: max of both), and tidy must keep that version exactly. Renovate does not read MANUAL: its versions are
+# raised by hand in a reviewed PR, when the libraries or services move to a new otel/log/klog/automaxprocs/
+# automemlimit release, or when the probe needs an API that only a newer release has. tidy may raise a manual pin
+# of a module absent from go.mod (a newer grpc or otel from go.mod can require it), never lower it (pin_violation).
 GO_VERSION = re.search(r"^go (\S+)$", GO_MOD, re.M)[1]
-PINNED = {
-    "github.com/prometheus/client_golang": module_version("github.com/prometheus/client_golang"),
-    "google.golang.org/grpc": module_version("google.golang.org/grpc"),
-    "go.opentelemetry.io/otel": module_version("go.opentelemetry.io/otel"),
+FROM_GO_MOD = [
+    "github.com/prometheus/client_golang",
+    "google.golang.org/grpc",
+    "go.opentelemetry.io/otel",
+    "go.opentelemetry.io/otel/metric",
+    "go.opentelemetry.io/otel/trace",
+    "golang.org/x/net",
+    "golang.org/x/sys",
+]
+MANUAL = {
     "go.opentelemetry.io/otel/log": "v0.20.0",  # the release paired with otel v1.44.0
     "k8s.io/klog": "v1.0.0",
     "k8s.io/klog/v2": "v2.130.1",
     "go.uber.org/automaxprocs": "v1.6.0",
     "github.com/KimMachineGun/automemlimit": "v1.0.1",
-    "go.opentelemetry.io/otel/metric": module_version("go.opentelemetry.io/otel/metric"),
-    "go.opentelemetry.io/otel/trace": module_version("go.opentelemetry.io/otel/trace"),
-    "golang.org/x/sys": module_version("golang.org/x/sys"),
 }
+PINNED = {module: pin(module) for module in FROM_GO_MOD} | {module: pin(module, version) for module, version in MANUAL.items()}
 
 PROMETHEUS = "github.com/prometheus/client_golang/prometheus"
 # import path -> identifiers that must be reported; every one is referenced as a value.
@@ -107,10 +124,13 @@ FORBIDDEN = {
                                "NewGaugeFunc", "NewHistogram", "NewHistogramVec", "NewSummary",
                                "NewSummaryVec", "NewUntypedFunc"],
     PROMETHEUS + "/promhttp": ["Handler"],
+    "golang.org/x/net/http/httpproxy": ["FromEnvironment"],
     "net/http": ["DefaultClient", "DefaultTransport", "DefaultServeMux", "Handle", "HandleFunc", "Get", "Head",
                  "Post", "PostForm", "ListenAndServe", "ListenAndServeTLS", "Serve", "ServeTLS",
                  "ProxyFromEnvironment"],
     "google.golang.org/grpc": ["EnableTracing"],
+    "google.golang.org/grpc/binarylog": ["SetSink"],
+    "google.golang.org/grpc/encoding/gzip": ["SetLevel"],
     "google.golang.org/grpc/encoding": ["RegisterCodec", "RegisterCodecV2", "RegisterCompressor"],
     "google.golang.org/grpc/resolver": ["Register", "SetDefaultScheme"],
     "google.golang.org/grpc/balancer": ["Register"],
@@ -123,7 +143,7 @@ FORBIDDEN = {
     "os": ["Getenv", "LookupEnv", "Environ", "ExpandEnv", "Setenv", "Unsetenv", "Clearenv", "Args",
            "UserHomeDir", "UserConfigDir", "UserCacheDir", "Stdout", "Stderr", "Stdin", "TempDir",
            "CreateTemp", "MkdirTemp", "Chdir"],
-    "syscall": ["Getenv", "Environ", "Setenv", "Unsetenv", "Clearenv", "Chdir"],
+    "syscall": ["Getenv", "Environ", "Setenv", "Unsetenv", "Clearenv", "Chdir", "Stdin", "Stdout", "Stderr"],
     "flag": ["Arg", "Args", "Bool", "BoolFunc", "BoolVar", "CommandLine", "Duration", "DurationVar", "Float64",
              "Float64Var", "Func", "Int", "Int64", "Int64Var", "IntVar", "Lookup", "NArg", "NFlag", "Parse",
              "Parsed", "PrintDefaults", "Set", "String", "StringVar", "TextVar", "Uint", "Uint64", "Uint64Var",
@@ -134,14 +154,18 @@ FORBIDDEN = {
 }
 PLATFORM = {
     "unix": {"golang.org/x/sys/unix": ["Getenv", "Environ", "Setenv", "Unsetenv", "Clearenv", "Chdir", "Fchdir",
-                                          "Umask"],
-             "syscall": ["Fchdir", "Umask"]},
+                                          "Umask", "Chroot", "Setrlimit", "Prlimit", "Stdin", "Stdout", "Stderr"],
+             "syscall": ["Fchdir", "Umask", "Chroot", "Setrlimit"]},
     "windows": {"golang.org/x/sys/windows": ["Getenv", "Environ", "Setenv", "Unsetenv", "Clearenv",
                                              "GetEnvironmentVariable", "SetEnvironmentVariable", "GetEnvironmentStrings",
                                              "ExpandEnvironmentStrings", "CreateEnvironmentBlock", "Token.Environ",
-                                             "Chdir", "SetCurrentDirectory"],
+                                             "Token(0).Environ(true)", "Chdir", "SetCurrentDirectory",
+                                             "SetDllDirectory", "SetDefaultDllDirectories", "Stdin", "Stdout",
+                                             "Stderr", "GetStdHandle", "SetStdHandle", "GetTempPath",
+                                             "GetCommandLine", "CommandLineToArgv"],
                 "syscall": ["GetEnvironmentVariable", "SetEnvironmentVariable", "GetEnvironmentStrings",
-                            "SetCurrentDirectory"]},
+                            "SetCurrentDirectory", "GetStdHandle", "GetTempPath", "GetCommandLine",
+                            "CommandLineToArgv"]},
 }
 
 # Chains and an aliased import: each marked line must be reported by its first identifier.
@@ -180,8 +204,11 @@ import (
 	_ "go.uber.org/automaxprocs"               // want
 	_ "golang.org/x/net/trace"                 // want
 	_ "google.golang.org/grpc/grpclog/glogger" // want
+	_ "google.golang.org/grpc/xds"             // want
 	_ "k8s.io/klog"                            // want
 	_ "k8s.io/klog/v2"                         // want
+	_ "net/http/cgi"                           // want
+	_ "net/http/fcgi"                          // want
 	_ "net/http/pprof"                         // want
 )
 '''
@@ -269,6 +296,7 @@ func Allowed(ctx context.Context, l *slog.Logger, reg prometheus.Registerer, c p
 	_ = encoding.GetCodecV2("proto")
 	_ = encoding.GetCompressor("gzip")
 	_ = balancer.Get("round_robin")
+	_ = grpc.ForceCodecV2
 	_, _ = os.ReadFile("x")
 	_ = os.Expand("$A", func(string) string { return "" })
 	_ = fmt.Sprintf("x")
@@ -287,8 +315,9 @@ def forbidden_file(imports, build="", name="Forbidden"):
     lines += [")", "", f"// {name} references every forbidden identifier on its own line.", f"func {name}() {{"]
     expected = set()
     for path, names in imports.items():
-        for name in names:  # every name of the family, one per line
-            lines.append(f"\t_ = {module_path(path)}.{name}")
+        for name in names:  # every name of the family, one per line; a call form is assigned as a two-value result
+            target = "_, _" if "(" in name else "_"
+            lines.append(f"\t{target} = {module_path(path)}.{name}")
             expected.add(len(lines))
     if not build:
         for builtin in ["print", "println"]:
@@ -359,7 +388,20 @@ class PinTests(unittest.TestCase):
         for module, version in PINNED.items():
             from_go_mod = required_version(module, GO_MOD)
             if from_go_mod is not None:
-                self.assertEqual(version, from_go_mod, module)
+                expected = max([from_go_mod] + ([MANUAL[module]] if module in MANUAL else []), key=semver_key)
+                self.assertEqual(version, expected, module)
+        for module in FROM_GO_MOD:
+            self.assertIsNotNone(required_version(module, GO_MOD), f"{module} left go.mod; move it to MANUAL")
+
+    def test_pin_takes_the_higher_of_go_mod_and_manual(self):
+        go_mod = "module x\n\nrequire (\n\ta.example/m v1.5.0\n)\n"
+        self.assertEqual(pin("a.example/m", "v1.2.0", go_mod), "v1.5.0")  # go.mod above the manual pin
+        self.assertEqual(pin("a.example/m", "v1.7.0", go_mod), "v1.7.0")  # go.mod below the manual pin
+        self.assertEqual(pin("a.example/m", "v1.5.0", go_mod), "v1.5.0")
+        self.assertEqual(pin("a.example/m", None, go_mod), "v1.5.0")
+        self.assertEqual(pin("b.example/m", "v0.3.0", go_mod), "v0.3.0")  # absent from go.mod
+        with self.assertRaises(AssertionError):
+            pin("b.example/m", None, go_mod)
 
 
 class ProbeTests(unittest.TestCase):
