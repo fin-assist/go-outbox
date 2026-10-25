@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 	"testing"
@@ -87,5 +89,23 @@ func TestUnitDispatcherPanickingDeliveryIsRetriedSafely(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "outbox delivery panicked") || !strings.Contains(logs.String(), "target=x") || strings.Contains(logs.String(), "PRIVATE") {
 		t.Fatalf("unsafe or missing panic log: %q", logs.String())
+	}
+}
+
+// Under GODEBUG=panicnil=1 recover() returns nil for panic(nil); an unrecognised panic would
+// look like success and the event would be deleted. The child process re-runs this test with
+// that setting (the parent's default is panicnil=0, already covered above).
+func TestUnitDeliverPanicNilWithLegacyGODEBUG(t *testing.T) {
+	if os.Getenv("OUTBOX_PANICNIL_CHILD") == "1" {
+		err := deliver(t.Context(), func(context.Context, Event) error { panic(nil) }, Event{}) //nolint:govet // The legacy nil panic is the case under test.
+		if !errors.Is(err, errDeliveryPanic) {
+			t.Fatalf("legacy panic(nil) treated as delivered: %v", err)
+		}
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestUnitDeliverPanicNilWithLegacyGODEBUG$", "-test.count=1") //nolint:gosec // Re-executes the current test binary.
+	cmd.Env = append(os.Environ(), "OUTBOX_PANICNIL_CHILD=1", "GODEBUG=panicnil=1")
+	if out, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(out), "PASS") {
+		t.Fatalf("child with panicnil=1 failed: %v\n%s", err, out)
 	}
 }

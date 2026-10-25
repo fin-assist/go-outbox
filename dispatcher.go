@@ -371,14 +371,20 @@ var errDeliveryPanic = errors.New("outbox: delivery panicked")
 
 // deliver turns a recipient panic into a failed attempt, so one poisoned event retries with
 // backoff instead of crashing every producer pod that claims it. runtime.Goexit cannot be
-// intercepted and still unwinds through the caller's connection cleanup.
+// intercepted and still unwinds through the caller's connection cleanup. The returned flag,
+// not recover's value, detects the panic: with GODEBUG=panicnil=1 panic(nil) recovers as nil
+// and would otherwise acknowledge (delete) an undelivered event.
 func deliver(ctx context.Context, send Delivery, event Event) (err error) {
+	returned := false
 	defer func() {
-		if recover() != nil {
+		if !returned {
+			_ = recover()
 			err = errDeliveryPanic
 		}
 	}()
-	return send(ctx, event)
+	err = send(ctx, event)
+	returned = true
+	return err
 }
 func (d *Dispatcher) fanout(ctx context.Context, c dispatchSession, transactions *postgres.Manager, r row) error {
 	targets := d.options.Routes[r.event.Topic]
