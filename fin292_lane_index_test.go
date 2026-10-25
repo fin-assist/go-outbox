@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -243,14 +246,15 @@ func TestIntegrationLaneIndexMigrationRunsConcurrently(t *testing.T) {
 }
 
 // With PollInterval longer than the removed-routes cadence and no notifications, Run still
-// wakes for the next pass: a removed-route row that becomes due after the first pass is
-// classified without waiting for the poll.
+// wakes for the next pass: the first pass classifies a due removed-route row at start, and
+// only a later pass, woken by the cadence rather than the hour-long poll, classifies it again
+// once its retry is due.
 func TestIntegrationRunWakesForRemovedRoutesPassDespiteLongPoll(t *testing.T) {
 	pool := database(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
-	// Not due at the first pass, due shortly after; a plain INSERT sends no notification.
-	if _, err := pool.Exec(ctx, `INSERT INTO outbox_events(topic,event_key,payload,target,next_attempt_at,created_at) VALUES('t','key',''::bytea,'gone',now()+interval '300 milliseconds',now())`); err != nil {
+	// Due at the first pass; a plain INSERT sends no notification.
+	if _, err := pool.Exec(ctx, `INSERT INTO outbox_events(topic,event_key,payload,target,next_attempt_at,created_at) VALUES('t','key',''::bytea,'gone',now(),now())`); err != nil {
 		t.Fatal(err)
 	}
 	d := dispatcher(t, pool, Routes{"t": {"b": func(context.Context, Event) error { return nil }}}, time.Now)
@@ -258,8 +262,85 @@ func TestIntegrationRunWakesForRemovedRoutesPassDespiteLongPoll(t *testing.T) {
 	d.removedInterval = 50 * time.Millisecond
 	done := make(chan error, 1)
 	go func() { done <- d.Run(ctx) }()
+	eventually(t, ctx, "removed row not classified twice before the hour-long poll", func(ctx context.Context) (bool, error) {
+		var attempts int
+		err := pool.QueryRow(ctx, `SELECT attempts FROM outbox_events WHERE target='gone' AND last_error='route_unconfigured'`).Scan(&attempts)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return attempts == 2, err
+	})
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	assertNoSessionLocks(t, pool)
+}
+
+// removedPassFailures counts warnings logged from removedPass, identified by the call site,
+// so failures of the fan-out and target loops sharing the message are not counted.
+type removedPassFailures struct{ n atomic.Int64 }
+
+func (*removedPassFailures) Enabled(context.Context, slog.Level) bool { return true }
+func (h *removedPassFailures) Handle(_ context.Context, r slog.Record) error {
+	frame, _ := runtime.CallersFrames([]uintptr{r.PC}).Next()
+	if strings.HasSuffix(frame.Function, ".removedPass") {
+		h.n.Add(1)
+	}
+	return nil
+}
+func (h *removedPassFailures) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *removedPassFailures) WithGroup(string) slog.Handler      { return h }
+
+// A PostgreSQL error during the removed-routes pass under Run is retried after the pass
+// cadence, not after the hour-long PollInterval and not in a busy loop: while the table is
+// unavailable each retry waits for the cadence, and once it is back the next retry classifies
+// the removed-route row.
+func TestIntegrationRunRetriesRemovedRoutesPassAfterDatabaseError(t *testing.T) {
+	const interval = 100 * time.Millisecond
+	pool := database(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	if _, err := pool.Exec(ctx, `INSERT INTO outbox_events(topic,event_key,payload,target,next_attempt_at,created_at) VALUES('t','key',''::bytea,'gone',now(),now())`); err != nil {
+		t.Fatal(err)
+	}
+	// Every dispatcher query fails with undefined_table until the table is renamed back.
+	if _, err := pool.Exec(ctx, `ALTER TABLE outbox_events RENAME TO outbox_events_unavailable`); err != nil {
+		t.Fatal(err)
+	}
+	restored := false
+	defer func() {
+		if !restored {
+			_, _ = pool.Exec(context.WithoutCancel(ctx), `ALTER TABLE outbox_events_unavailable RENAME TO outbox_events`)
+		}
+	}()
+	failures := &removedPassFailures{}
+	d := dispatcher(t, pool, Routes{"t": {"b": func(context.Context, Event) error { return nil }}}, time.Now)
+	d.options.Logger = slog.New(failures)
+	d.options.PollInterval = time.Hour
+	d.removedInterval = interval
+	start := time.Now()
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+	const retries = 4
+	eventually(t, ctx, "removed pass not retried during the outage", func(context.Context) (bool, error) {
+		return failures.n.Load() >= retries, nil
+	})
+	// Retry k follows k-1 cadence waits; a busy loop reaches it at once.
+	if elapsed := time.Since(start); elapsed < (retries-1)*interval*9/10 {
+		t.Fatalf("%d removed-pass failures in %v: retry does not wait", failures.n.Load(), elapsed)
+	}
+	if _, err := pool.Exec(ctx, `ALTER TABLE outbox_events_unavailable RENAME TO outbox_events`); err != nil {
+		t.Fatal(err)
+	}
+	restored = true
+	outage := time.Since(start)
+	// Bounded retries: at most one per cadence wait during the outage, plus the one in flight.
+	if n := failures.n.Load(); n > int64(outage/(interval*9/10))+2 {
+		t.Fatalf("%d removed-pass failures in %v", n, outage)
+	}
 	classified := classifiedRemoved(pool, "gone")
-	eventually(t, ctx, "removed row not classified before the hour-long poll", func(ctx context.Context) (bool, error) {
+	eventually(t, ctx, "removed row not classified after recovery", func(ctx context.Context) (bool, error) {
 		n, err := classified(ctx)
 		return n == 1, err
 	})
