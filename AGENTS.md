@@ -34,7 +34,7 @@ for itself: what it does, its YouTrack issue, which services use it.
 |---|---|
 | Package documentation: what the library does, what it needs from the service | `doc.go` |
 | Public API of the library | `outbox.go` (transactional publisher), `dispatcher.go` (routes and primary worker), `grpc.go` (system RPC adapter) |
-| Implementation details | `internal/` |
+| Implementation details | `internal/`; dispatcher connection-lease seam and its `go-postgres.Manager` — `dispatcher.go` |
 | Migration source for the service runner (`Migrations`, `MigrationsName`, `MigrationsTable`) | `migrations.go`, `migrations/` |
 | PostgreSQL for tests, up → down → up check | `internal/pgtest/` (mirrors `migratetest` of the service template) |
 | Integration guide for services | `README.md`, «Внедрение» |

@@ -12,6 +12,7 @@ import (
 
 	settings "github.com/fin-assist/contracts/gen/go/finassist/usersettings/v1"
 	identity "github.com/fin-assist/go-identity"
+	postgres "github.com/fin-assist/go-postgres"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -93,21 +94,20 @@ func TestServiceUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := dispatcher(t, pool, Routes{"user.timezone_changed": {"assistant": send}}, time.Now)
+	transactions := postgres.New(pool)
+	publisher, err := NewPublisher(transactions, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
 	publishVersion := func(version int32) {
 		t.Helper()
-		tx, e := pool.Begin(t.Context())
-		if e != nil {
-			t.Fatal(e)
-		}
-		p, _ := NewPublisher(provider{tx}, time.Now)
 		payload, e := proto.Marshal(&settings.SetUserTimezoneRequest{UserId: "00000000-0000-4000-8000-000000000001", Timezone: "Europe/Moscow", SettingsVersion: version})
 		if e != nil {
 			t.Fatal(e)
 		}
-		if e = p.Publish(t.Context(), "user.timezone_changed", "00000000-0000-4000-8000-000000000001", payload); e != nil {
-			t.Fatal(e)
-		}
-		if e = tx.Commit(t.Context()); e != nil {
+		if e = transactions.Run(t.Context(), func(ctx context.Context) error {
+			return publisher.Publish(ctx, "user.timezone_changed", "00000000-0000-4000-8000-000000000001", payload)
+		}); e != nil {
 			t.Fatal(e)
 		}
 		if e = d.drainOnce(t.Context()); e != nil {

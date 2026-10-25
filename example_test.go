@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	postgres "github.com/fin-assist/go-postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
@@ -16,21 +16,17 @@ import (
 	"github.com/fin-assist/go-outbox"
 )
 
-type serviceDB struct{ tx pgx.Tx }
-
-func (db serviceDB) Tx(context.Context) (pgx.Tx, bool) { return db.tx, db.tx != nil }
 func ExamplePublisher_Publish() {
 	ctx := context.Background()
 	pool, _ := pgxpool.New(ctx, "postgres://localhost/service?target_session_attrs=read-write")
 	defer pool.Close()
-	tx, _ := pool.Begin(ctx)
-	defer func() { _ = tx.Rollback(ctx) }()
-	publisher, _ := outbox.NewPublisher(serviceDB{tx: tx}, time.Now)
-	// Perform the service's domain writes in tx before publishing its protobuf event.
-	if err := publisher.Publish(ctx, "user.timezone_changed", "user-123", []byte{}); err != nil {
-		return
-	}
-	_ = tx.Commit(ctx)
+	transactions := postgres.New(pool) // One service-owned manager for this pool.
+	publisher, _ := outbox.NewPublisher(transactions, time.Now)
+	_ = transactions.Run(ctx, func(ctx context.Context) error {
+		tx, _ := transactions.Tx(ctx)
+		_ = tx // Perform the service's domain writes here before publishing.
+		return publisher.Publish(ctx, "user.timezone_changed", "user-123", []byte{})
+	})
 }
 func ExampleDispatcher_Run() {
 	ctx := context.Background()
