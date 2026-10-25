@@ -191,7 +191,7 @@ CI (`.github/workflows/ci.yml`):
 | Job | Что |
 |---|---|
 | `go` | `go mod tidy` без изменений, `go vet`, `go test -race` с PostgreSQL 18 в Docker (testcontainers), включая «вверх → вниз → вверх» для миграций; тесты скриптов; формат `CHANGELOG.md`; три независимых порога statements ≥80%, сводка и artifacts |
-| `lint` | golangci-lint (`.golangci.yml`): `forbidigo` против обхода `finerr` и против глобальных логгера, реестра метрик и переменных окружения; `depguard` против фреймворков |
+| `lint` | golangci-lint (`.golangci.yml`): `forbidigo` против обхода `finerr` и против ядра процессного состояния (глобальные логгер, метрики, HTTP, OpenTelemetry, окружение и процесс, `AGENTS.md`); `depguard` против фреймворков и пакетов с побочными эффектами init |
 | `api` | `gorelease`: изменения экспортируемого API против последнего тега и предлагаемая версия; на PR выпуска — проверка номера из `CHANGELOG.md` |
 | `migrations` (PR) | существующие миграции не изменены, squawk по новым; ширина integer выбирается по диапазону домена (FIN-214) |
 
