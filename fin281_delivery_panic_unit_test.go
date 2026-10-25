@@ -71,7 +71,7 @@ func TestUnitDispatcherPanickingDeliveryIsRetriedSafely(t *testing.T) {
 	var logs bytes.Buffer
 	d.options.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 	lock := false
-	found, err := d.dispatch(t.Context(), session, "x", &lock)
+	found, err := d.dispatch(t.Context(), session, d.lane("x"), &lock)
 	if !found || !lock || !errors.Is(err, errRetryScheduled) {
 		t.Fatalf("panic was not a scheduled retry: found=%v lock=%v err=%v", found, lock, err)
 	}
