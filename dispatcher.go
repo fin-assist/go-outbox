@@ -10,6 +10,7 @@ import (
 	"time"
 
 	postgres "github.com/fin-assist/go-postgres"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
@@ -135,11 +136,19 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 			}
 		}
 	}
+	// The zero time makes the first removed-routes pass run right after the first fan-out batch.
+	var removedDue time.Time
 	for ctx.Err() == nil {
 		more, err := d.batch(runCtx, "", wakeTargets)
 		if err != nil && ctx.Err() == nil {
 			d.options.Logger.WarnContext(ctx, "outbox primary unavailable")
 		}
+		if ctx.Err() != nil {
+			break
+		}
+		var removedMore bool
+		removedDue, removedMore = d.removedPass(runCtx, removedDue)
+		more = more || removedMore
 		if ctx.Err() != nil {
 			break
 		}
@@ -208,11 +217,67 @@ func (d *Dispatcher) targetNames() []string {
 	return result
 }
 
-// batch drains one lane. Empty target handles fan-out and removed routes without RPC.
+// removedRoutesInterval is the cadence of the pass over rows whose target is no longer
+// configured. It equals the maximum retry backoff, so every such row becomes due and is
+// rescheduled at most one interval later. The pass handles one batch per fan-out batch
+// while full, then sleeps for the interval.
+const removedRoutesInterval = 5 * time.Minute
+
+// Candidate queries of the lanes. Every lane pages by (next_attempt_at,id) with the lane
+// argument as $4. laneCandidates serves one configured target or, with ”, unexpanded
+// events through the (target,next_attempt_at,id) index. removedCandidates finds rows of
+// targets absent from the current routes; <>ALL cannot use that index, so it runs rarely
+// through the (next_attempt_at,id) index.
+const (
+	laneCandidates    = `SELECT id,next_attempt_at FROM outbox_events WHERE target=$4 AND next_attempt_at<=$1 AND (next_attempt_at,id)>($2,$3) ORDER BY next_attempt_at,id LIMIT 50 FOR UPDATE SKIP LOCKED`
+	removedCandidates = `SELECT id,next_attempt_at FROM outbox_events WHERE target<>'' AND target<>ALL($4::text[]) AND next_attempt_at<=$1 AND (next_attempt_at,id)>($2,$3) ORDER BY next_attempt_at,id LIMIT 50 FOR UPDATE SKIP LOCKED`
+)
+
+// selection is a lane's candidate query and its $4 argument.
+type selection struct {
+	query string
+	arg   any
+}
+
+// lane selects one configured target, or unexpanded events for the empty target.
+func (d *Dispatcher) lane(target string) selection { return selection{laneCandidates, target} }
+
+// removedRoutes selects deliveries whose target is not among the current routes.
+func (d *Dispatcher) removedRoutes() selection {
+	return selection{removedCandidates, d.targetNames()}
+}
+
+// removedPass handles one removed-routes batch once due is reached and returns the next due
+// time and whether the batch was full. A full batch stays due, so it continues after the next
+// fan-out batch; a database error retries after the fan-out wait; otherwise the pass sleeps
+// for removedRoutesInterval.
+func (d *Dispatcher) removedPass(ctx context.Context, due time.Time) (time.Time, bool) {
+	if d.options.Now().Before(due) {
+		return due, false
+	}
+	more, err := d.drain(ctx, d.removedRoutes(), nil)
+	if err != nil {
+		if ctx.Err() == nil {
+			d.options.Logger.WarnContext(ctx, "outbox primary unavailable")
+		}
+		return due, false
+	}
+	if more {
+		return due, true
+	}
+	return d.options.Now().Add(removedRoutesInterval), false
+}
+
+// batch drains one lane. Empty target handles fan-out without RPC.
 // A full batch immediately continues in that lane, independently of all other lanes.
 func (d *Dispatcher) batch(ctx context.Context, target string, onWork func()) (bool, error) {
+	return d.drain(ctx, d.lane(target), onWork)
+}
+
+// drain handles up to BatchSize rows of a selection and reports whether the batch was full.
+func (d *Dispatcher) drain(ctx context.Context, s selection, onWork func()) (bool, error) {
 	for range d.options.BatchSize {
-		found, err := d.oneFor(ctx, target)
+		found, err := d.oneOf(ctx, s)
 		if errors.Is(err, errRetryScheduled) {
 			return false, nil
 		}
@@ -237,7 +302,11 @@ type row struct {
 	created  time.Time
 }
 
-func (d *Dispatcher) oneFor(ctx context.Context, targetFilter string) (bool, error) {
+func (d *Dispatcher) oneFor(ctx context.Context, target string) (bool, error) {
+	return d.oneOf(ctx, d.lane(target))
+}
+
+func (d *Dispatcher) oneOf(ctx context.Context, s selection) (bool, error) {
 	c, err := d.pool.Acquire(ctx)
 	if err != nil {
 		return false, err
@@ -253,7 +322,7 @@ func (d *Dispatcher) oneFor(ctx context.Context, targetFilter string) (bool, err
 		defer cancel()
 		_ = c.closeDetached(closeCtx)
 	}()
-	return d.dispatch(ctx, c, targetFilter, &lockMayExist)
+	return d.dispatch(ctx, c, s, &lockMayExist)
 }
 
 // dispatchSession is one acquired connection lease, never the shared pool. Both
@@ -263,7 +332,7 @@ type dispatchSession interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 }
 
-func (d *Dispatcher) dispatch(ctx context.Context, c dispatchSession, targetFilter string, lockMayExist *bool) (bool, error) {
+func (d *Dispatcher) dispatch(ctx context.Context, c dispatchSession, s selection, lockMayExist *bool) (bool, error) {
 	transactions := postgres.New(c)
 	var selected *row
 	err := transactions.Run(ctx, func(ctx context.Context) error {
@@ -278,7 +347,10 @@ func (d *Dispatcher) dispatch(ctx context.Context, c dispatchSession, targetFilt
 		var afterTime time.Time
 		var afterID int64
 		for selected == nil {
-			rows, queryErr := tx.Query(ctx, `SELECT id,next_attempt_at FROM outbox_events WHERE next_attempt_at<=$1 AND (next_attempt_at,id)>($2,$3) AND (target=$4 OR ($4='' AND target<>ALL($5::text[]))) ORDER BY next_attempt_at,id LIMIT 50 FOR UPDATE SKIP LOCKED`, d.options.Now(), afterTime, afterID, targetFilter, d.targetNames())
+			// An unnamed statement is planned for the actual lane each time. A cached prepared
+			// statement switches to a generic plan after five executions, which ignores target
+			// selectivity and pages a foreign backlog through outbox_events_due.
+			rows, queryErr := tx.Query(ctx, s.query, pgx.QueryExecModeExec, d.options.Now(), afterTime, afterID, s.arg)
 			if queryErr != nil {
 				return queryErr
 			}

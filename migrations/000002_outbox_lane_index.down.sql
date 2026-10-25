@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS outbox_events_lane;

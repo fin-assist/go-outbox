@@ -769,6 +769,9 @@ func (d *Dispatcher) drainOnce(ctx context.Context) error {
 	if _, err := d.batch(ctx, "", nil); err != nil {
 		return err
 	}
+	if _, err := d.drain(ctx, d.removedRoutes(), nil); err != nil {
+		return err
+	}
 	var wg sync.WaitGroup
 	errs := make(chan error, len(d.targetNames()))
 	for _, target := range d.targetNames() {
@@ -877,12 +880,11 @@ func TestIntegrationRunRemovedRoutesDoNotStarveNewFanout(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("old orphan deliveries starved new event")
 	}
-	var classified int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE target='removed-target' AND last_error='route_unconfigured'`).Scan(&classified); err != nil {
-		t.Fatal(err)
-	}
-	if classified != 80 {
-		t.Fatalf("only %d orphan routes classified", classified)
+	// The removed-routes pass interleaves full batches with fan-out until all due orphans are classified.
+	for classified := 0; classified != 80; {
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE target='removed-target' AND last_error='route_unconfigured'`).Scan(&classified); err != nil {
+			t.Fatalf("only %d orphan routes classified: %v", classified, err)
+		}
 	}
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
