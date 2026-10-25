@@ -135,7 +135,7 @@ func (p *unitPool) Query(context.Context, string, ...any) (pgx.Rows, error) {
 	return p.rows, p.queryErr
 }
 func unitDispatcher(pool primaryPool, routes Routes) *Dispatcher {
-	return &Dispatcher{pool: pool, options: Options{Routes: routes, Now: func() time.Time { return time.Unix(1700000000, 0) }, BatchSize: 1, PollInterval: time.Millisecond, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, count: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "rows"}, []string{"target"}), age: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "age"}, []string{"target"}), failures: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "failures"}, []string{"target"})}
+	return &Dispatcher{pool: pool, removedInterval: removedRoutesInterval, options: Options{Routes: routes, Now: func() time.Time { return time.Unix(1700000000, 0) }, BatchSize: 1, PollInterval: time.Millisecond, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, count: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "rows"}, []string{"target"}), age: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "age"}, []string{"target"}), failures: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "failures"}, []string{"target"})}
 }
 
 func TestUnitDispatcherSelectionAndLeaseOwnership(t *testing.T) {
@@ -171,7 +171,7 @@ func TestUnitDispatcherSelectionAndLeaseOwnership(t *testing.T) {
 			}
 			tx.query = func(q string, a ...any) (pgx.Rows, error) {
 				queries++
-				if !strings.Contains(q, "FOR UPDATE SKIP LOCKED") || a[3] != "assistant" {
+				if !strings.Contains(q, "FOR UPDATE SKIP LOCKED") || a[0] != pgx.QueryExecModeExec || a[4] != "assistant" {
 					t.Fatal("selection lost lane or row locking")
 				}
 				if stage == "query" {
@@ -480,7 +480,7 @@ func TestUnitDispatcherLifecycleAndNotificationCleanup(t *testing.T) {
 					return unitIdleConn(), nil
 				}
 			}
-			d.wait(ctx, nil)
+			d.wait(ctx, nil, time.Millisecond)
 			if stage == "acquire" {
 				if c.detached {
 					t.Fatal("unacquired connection detached")
@@ -605,5 +605,66 @@ func TestUnitGRPCDeliveryIsolationAndFailures(t *testing.T) {
 		if _, err := GRPCDelivery(conn, source, method, request, reply); err == nil {
 			t.Fatal("invalid method accepted")
 		}
+	}
+}
+
+func TestUnitDispatcherRemovedRoutesPassCadence(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	for _, stage := range []string{"not due", "drained", "full", "storage error"} {
+		t.Run(stage, func(t *testing.T) {
+			c := unitIdleConn()
+			p := &unitPool{conn: c}
+			queries := 0
+			c.tx.query = func(q string, a ...any) (pgx.Rows, error) {
+				queries++
+				names, _ := a[4].([]string)
+				if q != removedCandidates || a[0] != pgx.QueryExecModeExec || len(names) != 1 || names[0] != "assistant" {
+					t.Fatalf("removed pass used %q %v", q, a)
+				}
+				if stage == "full" && queries == 1 {
+					return &unitRows{records: []unitRow{{values: []any{int64(7), now}}}}, nil
+				}
+				return &unitRows{}, nil
+			}
+			c.tx.queryRow = func(q string, _ ...any) pgx.Row {
+				if strings.Contains(q, "pg_try_advisory_lock") {
+					return unitRow{values: []any{true}}
+				}
+				if strings.Contains(q, "SELECT topic") {
+					return unitRow{values: []any{"settings", "user", []byte{}, "removed", 0, now}}
+				}
+				return unitRow{values: []any{false}}
+			}
+			if stage == "storage error" {
+				p.acquireErr = errUnitStorage
+			}
+			d := unitDispatcher(p, Routes{"settings": {"assistant": func(context.Context, Event) error {
+				t.Fatal("removed row delivered to a configured target")
+				return nil
+			}}})
+			due := now
+			if stage == "not due" {
+				due = now.Add(time.Second)
+			}
+			next, more := d.removedPass(t.Context(), due)
+			switch stage {
+			case "not due":
+				if more || !next.Equal(due) || queries != 0 {
+					t.Fatal("pass ran before due")
+				}
+			case "drained":
+				if more || !next.Equal(now.Add(removedRoutesInterval)) || queries != 1 {
+					t.Fatal("drained pass did not sleep for the interval")
+				}
+			case "full":
+				if !more || !next.Equal(due) || len(c.calls) != 1 || !strings.Contains(c.calls[0].args[2].(string), "route_unconfigured") {
+					t.Fatal("full pass did not stay due or classify the row")
+				}
+			case "storage error":
+				if more || !next.Equal(now.Add(d.options.PollInterval)) {
+					t.Fatal("failed pass not retried after min(PollInterval, interval)")
+				}
+			}
+		})
 	}
 }

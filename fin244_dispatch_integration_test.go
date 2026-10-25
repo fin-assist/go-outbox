@@ -69,7 +69,7 @@ func TestIntegrationDispatcherPinsSessionAcrossBothTransactionsAndDelivery(t *te
 		return nil
 	}}}, time.Now)
 	lock := false
-	if found, err := d.dispatch(t.Context(), session, "", &lock); !found || err != nil || !lock {
+	if found, err := d.dispatch(t.Context(), session, d.lane(""), &lock); !found || err != nil || !lock {
 		t.Fatalf("fanout: found=%v lock=%v err=%v", found, lock, err)
 	}
 	if len(session.pids) != 2 || session.pids[0] != pid || session.pids[1] != pid {
@@ -81,7 +81,7 @@ func TestIntegrationDispatcherPinsSessionAcrossBothTransactionsAndDelivery(t *te
 		t.Fatalf("fanout lost its session lock: %v %v", held, err)
 	}
 	// Reuse this dedicated lease for the target selection and acknowledgement.
-	if found, err := d.dispatch(t.Context(), session, "x", &lock); !found || err != nil {
+	if found, err := d.dispatch(t.Context(), session, d.lane("x"), &lock); !found || err != nil {
 		t.Fatalf("delivery: %v %v", found, err)
 	}
 	if calls != 1 || pending(t, pool) != 0 || session.pids[2] != pid {

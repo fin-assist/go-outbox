@@ -10,6 +10,7 @@ import (
 	"time"
 
 	postgres "github.com/fin-assist/go-postgres"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
@@ -48,12 +49,14 @@ type Options struct {
 // Dispatcher is safe for concurrent use except Run, which may run once at a time.
 // It starts no goroutines until Run is called and uses only the supplied primary pool.
 type Dispatcher struct {
-	options     Options
-	pool        primaryPool
-	running     atomic.Bool
-	count, age  *prometheus.GaugeVec
-	failures    *prometheus.CounterVec
-	observation sync.Mutex
+	options Options
+	pool    primaryPool
+	// removedInterval is the removed-routes pass cadence: removedRoutesInterval in production.
+	removedInterval time.Duration
+	running         atomic.Bool
+	count, age      *prometheus.GaugeVec
+	failures        *prometheus.CounterVec
+	observation     sync.Mutex
 }
 
 // NewDispatcher validates/copies configuration and registers bounded per-target metrics.
@@ -90,7 +93,7 @@ func NewDispatcher(o Options) (*Dispatcher, error) {
 		return nil, errors.New("outbox: too many targets or insufficient pool capacity")
 	}
 	o.Routes = routes
-	d := &Dispatcher{options: o, pool: poolAdapter{o.Pool}, count: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "finassist_outbox_rows", Help: "Pending rows by configured target; unexpanded events use the empty target."}, []string{"target"}), age: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "finassist_outbox_oldest_age_seconds", Help: "Age of the oldest pending row by target."}, []string{"target"}), failures: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "finassist_outbox_delivery_errors_total", Help: "Failed deliveries by configured target."}, []string{"target"})}
+	d := &Dispatcher{options: o, pool: poolAdapter{o.Pool}, removedInterval: removedRoutesInterval, count: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "finassist_outbox_rows", Help: "Pending rows by configured target; unexpanded events use the empty target."}, []string{"target"}), age: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "finassist_outbox_oldest_age_seconds", Help: "Age of the oldest pending row by target."}, []string{"target"}), failures: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "finassist_outbox_delivery_errors_total", Help: "Failed deliveries by configured target."}, []string{"target"})}
 	collectors := []prometheus.Collector{d.count, d.age, d.failures}
 	for i, c := range collectors {
 		if err := o.Registerer.Register(c); err != nil {
@@ -136,6 +139,8 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 			}
 		}
 	}
+	// The zero time makes the first removed-routes pass run right after the first fan-out batch.
+	var removedDue time.Time
 	for ctx.Err() == nil {
 		more, err := d.batch(runCtx, "", wakeTargets)
 		if err != nil && ctx.Err() == nil {
@@ -144,10 +149,17 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			break
 		}
+		var removedMore bool
+		removedDue, removedMore = d.removedPass(runCtx, removedDue)
+		more = more || removedMore
+		if ctx.Err() != nil {
+			break
+		}
 		if more {
 			continue
 		}
-		d.wait(runCtx, wakeTargets)
+		// Wake for the next removed-routes pass even when PollInterval is longer.
+		d.wait(runCtx, wakeTargets, min(d.options.PollInterval, removedDue.Sub(d.options.Now())))
 	}
 	return ctx.Err()
 }
@@ -169,10 +181,12 @@ func (d *Dispatcher) targetLoop(ctx context.Context, target string, wake <-chan 
 		timer.Stop()
 	}
 }
-func (d *Dispatcher) wait(ctx context.Context, onWork func()) {
+
+// wait listens for a publication or sleeps for at most limit, then returns to the fan-out loop.
+func (d *Dispatcher) wait(ctx context.Context, onWork func(), limit time.Duration) {
 	c, err := d.pool.Acquire(ctx)
 	if err != nil {
-		d.pause(ctx)
+		d.pause(ctx, limit)
 		return
 	}
 	defer func() {
@@ -181,14 +195,14 @@ func (d *Dispatcher) wait(ctx context.Context, onWork func()) {
 		_ = c.closeDetached(closeCtx)
 	}()
 	if _, err = c.Exec(ctx, `LISTEN finassist_outbox`); err != nil {
-		d.pause(ctx)
+		d.pause(ctx, limit)
 		return
 	}
 	// Drain after LISTEN, so a publication between the first drain and LISTEN is visible.
 	if more, _ := d.batch(ctx, "", onWork); more {
 		return
 	}
-	wait, cancel := context.WithTimeout(ctx, d.options.PollInterval)
+	wait, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	_ = c.waitForNotification(wait)
 }
@@ -209,11 +223,68 @@ func (d *Dispatcher) targetNames() []string {
 	return result
 }
 
-// batch drains one lane. Empty target handles fan-out and removed routes without RPC.
+// removedRoutesInterval is the cadence of the pass over rows whose target is no longer
+// configured. It equals the maximum retry backoff, so every such row becomes due and is
+// rescheduled at most one interval later. The pass handles one batch per fan-out batch
+// while full, then sleeps for the interval.
+const removedRoutesInterval = 5 * time.Minute
+
+// Candidate queries of the lanes. Every lane pages by (next_attempt_at,id) with the lane
+// argument as $4. laneCandidates serves one configured target or, with ”, unexpanded
+// events through the (target,next_attempt_at,id) index. removedCandidates finds rows of
+// targets absent from the current routes; <>ALL cannot use that index, so it runs rarely
+// through the (next_attempt_at,id) index.
+const (
+	laneCandidates    = `SELECT id,next_attempt_at FROM outbox_events WHERE target=$4 AND next_attempt_at<=$1 AND (next_attempt_at,id)>($2,$3) ORDER BY next_attempt_at,id LIMIT 50 FOR UPDATE SKIP LOCKED`
+	removedCandidates = `SELECT id,next_attempt_at FROM outbox_events WHERE target<>'' AND target<>ALL($4::text[]) AND next_attempt_at<=$1 AND (next_attempt_at,id)>($2,$3) ORDER BY next_attempt_at,id LIMIT 50 FOR UPDATE SKIP LOCKED`
+)
+
+// selection is a lane's candidate query and its $4 argument.
+type selection struct {
+	query string
+	arg   any
+}
+
+// lane selects one configured target, or unexpanded events for the empty target.
+func (d *Dispatcher) lane(target string) selection { return selection{laneCandidates, target} }
+
+// removedRoutes selects deliveries whose target is not among the current routes.
+func (d *Dispatcher) removedRoutes() selection {
+	return selection{removedCandidates, d.targetNames()}
+}
+
+// removedPass handles one removed-routes batch once due is reached and returns the next due
+// time and whether the batch was full. A full batch stays due, so it continues after the next
+// fan-out batch; a database error retries after min(PollInterval, the interval); otherwise the
+// pass sleeps for the interval. A returned time after Now is always in the future, so Run's
+// bounded wait never spins.
+func (d *Dispatcher) removedPass(ctx context.Context, due time.Time) (time.Time, bool) {
+	if d.options.Now().Before(due) {
+		return due, false
+	}
+	more, err := d.drain(ctx, d.removedRoutes(), nil)
+	if err != nil {
+		if ctx.Err() == nil {
+			d.options.Logger.WarnContext(ctx, "outbox primary unavailable")
+		}
+		return d.options.Now().Add(min(d.options.PollInterval, d.removedInterval)), false
+	}
+	if more {
+		return due, true
+	}
+	return d.options.Now().Add(d.removedInterval), false
+}
+
+// batch drains one lane. Empty target handles fan-out without RPC.
 // A full batch immediately continues in that lane, independently of all other lanes.
 func (d *Dispatcher) batch(ctx context.Context, target string, onWork func()) (bool, error) {
+	return d.drain(ctx, d.lane(target), onWork)
+}
+
+// drain handles up to BatchSize rows of a selection and reports whether the batch was full.
+func (d *Dispatcher) drain(ctx context.Context, s selection, onWork func()) (bool, error) {
 	for range d.options.BatchSize {
-		found, err := d.oneFor(ctx, target)
+		found, err := d.oneOf(ctx, s)
 		if errors.Is(err, errRetryScheduled) {
 			return false, nil
 		}
@@ -238,7 +309,11 @@ type row struct {
 	created  time.Time
 }
 
-func (d *Dispatcher) oneFor(ctx context.Context, targetFilter string) (bool, error) {
+func (d *Dispatcher) oneFor(ctx context.Context, target string) (bool, error) {
+	return d.oneOf(ctx, d.lane(target))
+}
+
+func (d *Dispatcher) oneOf(ctx context.Context, s selection) (bool, error) {
 	c, err := d.pool.Acquire(ctx)
 	if err != nil {
 		return false, err
@@ -254,7 +329,7 @@ func (d *Dispatcher) oneFor(ctx context.Context, targetFilter string) (bool, err
 		defer cancel()
 		_ = c.closeDetached(closeCtx)
 	}()
-	return d.dispatch(ctx, c, targetFilter, &lockMayExist)
+	return d.dispatch(ctx, c, s, &lockMayExist)
 }
 
 // dispatchSession is one acquired connection lease, never the shared pool. Both
@@ -264,7 +339,7 @@ type dispatchSession interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 }
 
-func (d *Dispatcher) dispatch(ctx context.Context, c dispatchSession, targetFilter string, lockMayExist *bool) (bool, error) {
+func (d *Dispatcher) dispatch(ctx context.Context, c dispatchSession, s selection, lockMayExist *bool) (bool, error) {
 	transactions := postgres.New(c)
 	var selected *row
 	err := transactions.Run(ctx, func(ctx context.Context) error {
@@ -279,7 +354,10 @@ func (d *Dispatcher) dispatch(ctx context.Context, c dispatchSession, targetFilt
 		var afterTime time.Time
 		var afterID int64
 		for selected == nil {
-			rows, queryErr := tx.Query(ctx, `SELECT id,next_attempt_at FROM outbox_events WHERE next_attempt_at<=$1 AND (next_attempt_at,id)>($2,$3) AND (target=$4 OR ($4='' AND target<>ALL($5::text[]))) ORDER BY next_attempt_at,id LIMIT 50 FOR UPDATE SKIP LOCKED`, d.options.Now(), afterTime, afterID, targetFilter, d.targetNames())
+			// An unnamed statement is planned for the actual lane each time. A cached prepared
+			// statement switches to a generic plan after five executions, which ignores target
+			// selectivity and pages a foreign backlog through outbox_events_due.
+			rows, queryErr := tx.Query(ctx, s.query, pgx.QueryExecModeExec, d.options.Now(), afterTime, afterID, s.arg)
 			if queryErr != nil {
 				return queryErr
 			}
@@ -461,8 +539,8 @@ func (d *Dispatcher) observe(ctx context.Context) error {
 	return nil
 }
 
-func (d *Dispatcher) pause(ctx context.Context) {
-	timer := time.NewTimer(d.options.PollInterval)
+func (d *Dispatcher) pause(ctx context.Context, limit time.Duration) {
+	timer := time.NewTimer(limit)
 	defer timer.Stop()
 	select {
 	case <-timer.C:

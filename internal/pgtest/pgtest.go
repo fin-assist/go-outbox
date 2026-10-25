@@ -1,32 +1,24 @@
-// Package pgtest provides a PostgreSQL for the library's tests and the checks of its
-// migration source.
+// Package pgtest selects the PostgreSQL server for the library's tests and runs the checks
+// of its migration source through the public go-migrate harness.
 //
-// It mirrors migratetest and migrate.Validate of fin-assist/go-service-template, so a
-// migration that passes here passes the service's runner: the same file rules, the same
-// version table per source, the same "up → down → up" walk. Keep the two in step.
+// Only the choice of the server lives here: TEST_DATABASE_URL or a test container, a skip
+// locally and a failure in CI. Database isolation, the file rules and the up → down → up
+// walk are github.com/fin-assist/go-migrate (migratetest and migrate.Validate), the same
+// code the services run, so a migration that passes here passes the service's runner.
 package pgtest
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
-	"net/url"
 	"os"
-	"regexp"
-	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/golang-migrate/migrate/v4"
-	pgxmigrate "github.com/golang-migrate/migrate/v4/database/pgx/v5"
-	"github.com/golang-migrate/migrate/v4/source/iofs"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/stdlib"
+	migrate "github.com/fin-assist/go-migrate"
+	"github.com/fin-assist/go-migrate/migratetest"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
@@ -36,7 +28,7 @@ const DefaultImage = "postgres:18-alpine"
 
 // IrreversibleMarker starts the down file of a step that cannot be rolled back; the rest
 // of the file raises an error, and the up → down → up walk skips its down.
-const IrreversibleMarker = "-- irreversible"
+const IrreversibleMarker = migratetest.IrreversibleMarker
 
 var (
 	serverOnce sync.Once
@@ -58,208 +50,89 @@ func DSN(t testing.TB) string {
 		}
 		t.Skipf("no PostgreSQL for tests (set TEST_DATABASE_URL or run Docker): %v", serverErr)
 	}
-
-	ctx := context.Background()
-	admin, err := pgx.Connect(ctx, serverDSN)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	defer func() { _ = admin.Close(ctx) }()
-
-	name := "t_" + randomHex(8)
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
-		t.Fatalf("create database: %v", err)
-	}
-	t.Cleanup(func() {
-		c, err := pgx.Connect(context.Background(), serverDSN)
-		if err != nil {
-			return
-		}
-		defer func() { _ = c.Close(context.Background()) }()
-		_, _ = c.Exec(context.Background(), "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)")
-	})
-
-	u, err := url.Parse(serverDSN)
-	if err != nil {
-		t.Fatalf("parse DSN: %v", err)
-	}
-	u.Path = "/" + name
-	return u.String()
+	return migratetest.DSN(t, serverDSN)
 }
 
-func server() (string, error) {
-	if dsn := os.Getenv("TEST_DATABASE_URL"); dsn != "" {
-		return dsn, nil
-	}
-	img := os.Getenv("TEST_POSTGRES_IMAGE")
-	if img == "" {
-		img = DefaultImage
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	c, err := tcpostgres.Run(ctx, img,
+func server() (string, error) { return selectServer(os.Getenv, runContainer) }
+
+// container is the part of the test container the server selection reads.
+type container interface {
+	ConnectionString(ctx context.Context, args ...string) (string, error)
+}
+
+// starter starts a PostgreSQL container of image.
+type starter func(ctx context.Context, image string) (container, error)
+
+func runContainer(ctx context.Context, image string) (container, error) {
+	c, err := tcpostgres.Run(ctx, image,
 		tcpostgres.WithDatabase("postgres"),
 		tcpostgres.WithUsername("postgres"),
 		tcpostgres.WithPassword("postgres"),
 		tcpostgres.BasicWaitStrategies(),
 	)
 	if err != nil {
-		return "", err
-	}
-	// The container lives until the test binary exits; Ryuk removes it.
-	return c.ConnectionString(ctx, "sslmode=disable")
-}
-
-func randomHex(n int) string {
-	b := make([]byte, n)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}
-
-var fileName = regexp.MustCompile(`^(\d+)_([a-z0-9_]+)\.(up|down)\.sql$`)
-
-// migration is one version of a source: its name and its two files.
-type migration struct {
-	name     string
-	up, down string
-}
-
-// Validate checks the files of a migration source by the service runner's rules: every SQL
-// name matches NNN_name.(up|down).sql, every version has one up and one down file, and a
-// version number belongs to one name. Non-SQL files (embed.go) are ignored.
-func Validate(fsys fs.FS) error {
-	_, err := migrations(fsys)
-	return err
-}
-
-func migrations(fsys fs.FS) (map[uint64]*migration, error) {
-	entries, err := fs.ReadDir(fsys, ".")
-	if err != nil {
 		return nil, err
 	}
-	versions := map[uint64]*migration{}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
-			continue
-		}
-		m := fileName.FindStringSubmatch(e.Name())
-		if m == nil {
-			return nil, fmt.Errorf("%q does not match NNN_name.up.sql / NNN_name.down.sql", e.Name())
-		}
-		v, err := strconv.ParseUint(m[1], 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("%q: version: %w", e.Name(), err)
-		}
-		mg := versions[v]
-		if mg == nil {
-			mg = &migration{name: m[2]}
-			versions[v] = mg
-		} else if mg.name != m[2] {
-			return nil, fmt.Errorf("version %d is used by %q and %q", v, mg.name, m[2])
-		}
-		if m[3] == "up" {
-			mg.up = e.Name()
-		} else {
-			mg.down = e.Name()
-		}
-	}
-	for v, mg := range versions {
-		if mg.up == "" {
-			return nil, fmt.Errorf("version %d (%s) has no up file", v, mg.name)
-		}
-		if mg.down == "" {
-			return nil, fmt.Errorf("version %d (%s) has no down file", v, mg.name)
-		}
-	}
-	return versions, nil
+	// The container lives until the test binary exits; Ryuk removes it.
+	return c, nil
 }
 
-// CheckUpDownUp applies the migrations of fsys one by one on an empty database with the
-// version table table, and for each version checks up → down → up: the down file really
-// undoes the up file (the same up applies again) and the source ends at its last version,
-// clean. A down file that starts with IrreversibleMarker is not run.
+// selectServer returns the admin DSN of the test server. A failure to read the connection
+// string has a fixed message: its cause can carry the DSN.
+func selectServer(getenv func(string) string, start starter) (string, error) {
+	if dsn := getenv("TEST_DATABASE_URL"); dsn != "" {
+		return dsn, nil
+	}
+	img := getenv("TEST_POSTGRES_IMAGE")
+	if img == "" {
+		img = DefaultImage
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	c, err := start(ctx, img)
+	if err != nil {
+		// No DSN exists yet and the password is the fixed test one, so the cause (Docker
+		// down, image pull limit) is kept for diagnostics.
+		return "", fmt.Errorf("start test PostgreSQL %s: %w", img, err)
+	}
+	dsn, err := c.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		return "", errors.New("read test PostgreSQL connection failed")
+	}
+	return dsn, nil
+}
+
+// Validate checks the files of a migration source by the service runner's rules
+// (migrate.Validate): every SQL name matches NNN_name.(up|down).sql, every version has one
+// up and one down file, and a version number belongs to one name.
+func Validate(fsys fs.FS) error {
+	return migrate.Validate(source("migrations", fsys))
+}
+
+// CheckUpDownUp validates fsys, then walks a fresh database with the version table table
+// through up → down → up of every version (migratetest.CheckUpDownUp). A down file that
+// starts with IrreversibleMarker is not run.
 func CheckUpDownUp(t testing.TB, table string, fsys fs.FS) {
 	t.Helper()
-	versions, err := migrations(fsys)
-	if err != nil {
+	src := source(table, fsys)
+	if err := migrate.Validate(src); err != nil {
 		t.Fatal(err)
 	}
-	m := open(t, DSN(t), table, fsys)
-
-	for {
-		// version fails the test on a dirty state, including after the last step.
-		before := version(t, m)
-		err := m.Steps(1)
-		if errors.Is(err, os.ErrNotExist) || errors.Is(err, migrate.ErrNoChange) {
-			break // no next migration
-		}
-		if err != nil {
-			t.Fatalf("up from %d: %v", before, err)
-		}
-		v := version(t, m)
-		down, err := fs.ReadFile(fsys, versions[uint64(v)].down)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.HasPrefix(strings.TrimSpace(string(down)), IrreversibleMarker) {
-			continue // its down file only fails on purpose
-		}
-		if err := m.Steps(-1); err != nil {
-			t.Fatalf("down from %d: %v", v, err)
-		}
-		if got := version(t, m); got != before {
-			t.Fatalf("down from %d left version %d, want %d", v, got, before)
-		}
-		if err := m.Steps(1); err != nil {
-			t.Fatalf("up again to %d: %v", v, err)
-		}
-	}
+	migratetest.CheckUpDownUp(t, DSN(t), src)
 }
 
-func version(t testing.TB, m *migrate.Migrate) uint {
-	t.Helper()
-	v, dirty, err := m.Version()
-	if errors.Is(err, migrate.ErrNilVersion) {
-		return 0
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	if dirty {
-		t.Fatalf("dirty at version %d", v)
-	}
-	return v
-}
-
-func open(t testing.TB, dsn, table string, fsys fs.FS) *migrate.Migrate {
-	t.Helper()
-	pc, err := pgx.ParseConfig(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db := stdlib.OpenDB(*pc)
-	t.Cleanup(func() { _ = db.Close() })
-	drv, err := pgxmigrate.WithInstance(db, &pgxmigrate.Config{MigrationsTable: table})
-	if err != nil {
-		t.Fatal(err)
-	}
-	files, err := iofs.New(fsys, ".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	m, err := migrate.NewWithInstance("iofs", files, "pgx5", drv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return m
-}
-
-// Apply runs a library migration source with the same driver and isolated version table
-// as a service. Use it for usage tests instead of executing embedded SQL directly.
+// Apply runs a library migration source with migrate.Up of go-migrate: the same runner
+// and isolated version table as a service. Use it for usage tests instead of executing
+// embedded SQL directly.
 func Apply(t testing.TB, dsn, table string, fsys fs.FS) {
 	t.Helper()
-	m := open(t, dsn, table, fsys)
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	if err := migrate.Up(ctx, migrate.DefaultConfig(dsn), []migrate.Source{source(table, fsys)}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func source(table string, fsys fs.FS) migrate.Source {
+	return migrate.Source{Name: table, Table: table, FS: fsys}
 }

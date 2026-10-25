@@ -18,7 +18,7 @@ Transactional outbox на PostgreSQL: событие пишется в тран�
 doc.go               package documentation: what the library does and what it needs from the service
 migrations.go        Migrations, MigrationsName, MigrationsTable for the service's migration runner
 migrations/          SQL migrations of the library, embedded (NNN_name.up.sql / .down.sql)
-internal/pgtest/     PostgreSQL for tests and the up -> down -> up check, same rules as the service runner
+internal/pgtest/     test PostgreSQL server selection; databases and up -> down -> up via go-migrate/migratetest
 scripts/             coverage execution guards and regressions, CHANGELOG checks (Python, standard library)
 docs/releasing.md    versions and releases
 ```
@@ -78,12 +78,38 @@ docs/releasing.md    versions and releases
 его строками для текущих получателей. У каждой свой retry. Добавление получателя действует
 на ещё не разложенные события; уже существующие доставки не пересоздаются. Удаление
 получателя из конфигурации не удаляет оставшиеся строки: они остаются с
-`route_unconfigured`, пока оператор не восстановит маршрут. Неизвестная тема сохраняется
-и перепроверяется через 5 минут. Исходное `created_at` переносится во все задания.
+`route_unconfigured`, пока оператор не восстановит маршрут. Такие строки обслуживает
+отдельный редкий проход по удалённым маршрутам (FIN-292): после первой пачки fanout при старте
+`Run`, затем раз в 5 минут (максимальная пауза повтора, поэтому каждая строка перепроверяется
+не позже чем через 5 минут после срока). Ожидание fanout ограничено сроком следующего прохода,
+поэтому каденция сохраняется и при `PollInterval` больше 5 минут; после ошибки БД проход
+повторяется через `min(PollInterval, 5 минут)`. Пока пачка прохода полная, он продолжается
+вперемешку с пачками fanout, по одной пачке до 50 строк за раз, и не задерживает новые события
+дольше одной пачки. После восстановления маршрута строки доставляет обычный цикл получателя.
+Неизвестная тема сохраняется и перепроверяется через 5 минут. Исходное `created_at` переносится во все задания.
 
 В схеме нет CHECK, триггеров и серверных функций. `bigint` identity выбран по числу
 **всех** вставок за срок жизни (fanout и DELETE не возвращают номера), а не по текущему backlog.
-Индекс `(next_attempt_at,id)` обслуживает выборку готовых записей.
+Индексы:
+
+| Индекс | Миграция | Что обслуживает |
+|---|---|---|
+| `outbox_events_lane (target, next_attempt_at, id)` | `000002`, `CREATE INDEX CONCURRENTLY` (FIN-292) | выборку готовых строк одного получателя и неразложенных событий (`target=''`): backlog одного получателя не читается циклами остальных |
+| `outbox_events_due (next_attempt_at, id)` | `000001` | редкий проход по удалённым маршрутам (`target<>ALL(...)`, этот индекс или последовательное чтение — по оценке планировщика) |
+
+Запрос кандидатов отправляется безымянным выражением (`pgx.QueryExecModeExec`) и
+планируется для конкретного получателя каждый раз: кэшированное prepared-выражение после
+пяти выполнений переходит на generic plan, который не учитывает селективность `target` и
+снова читает чужой backlog по `outbox_events_due`.
+
+Миграция `000002` — одна команда в своём файле, поэтому раннер (go-migrate, драйвер pgx5
+golang-migrate) выполняет её вне транзакции. Индекс строится без блокировки записи, но ждёт
+завершения транзакций, начатых до него, и ограничен `lock_timeout` / `statement_timeout`
+команды `migrate`. Если построение упало, остаётся индекс в состоянии `INVALID`, а
+`IF NOT EXISTS` повторного запуска его не исправит: удалите его
+(`DROP INDEX CONCURRENTLY IF EXISTS outbox_events_lane`), выставьте версию источника
+`outbox` в 1 (`<service> migrate force outbox 1`) и запустите `migrate up` снова
+(`docs/migrations.md` шаблона сервиса, «Грязное» состояние).
 
 Доставщик использует опубликованный `github.com/fin-assist/go-postgres v0.1.2`.
 Один внутренний Manager живёт в пределах выделенного connection lease и начинает обе

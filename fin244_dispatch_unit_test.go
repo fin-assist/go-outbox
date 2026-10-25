@@ -153,7 +153,7 @@ func TestUnitDispatcherSelectionManagerLifecycle(t *testing.T) {
 				return nil
 			})
 			lock := false
-			found, err := d.dispatch(t.Context(), session, "x", &lock)
+			found, err := d.dispatch(t.Context(), session, d.lane("x"), &lock)
 			success := failure == ""
 			empty := failure == "empty" || failure == "locked"
 			if found != success || (err == nil) != (success || empty) || calls != map[bool]int{true: 1}[success] {
@@ -187,7 +187,7 @@ func TestUnitDispatcherFanoutManagerLifecycle(t *testing.T) {
 			}
 			d := fin244Dispatcher(func(context.Context, Event) error { t.Fatal("fanout called remote peer"); return nil })
 			lock := false
-			found, err := d.dispatch(t.Context(), session, "", &lock)
+			found, err := d.dispatch(t.Context(), session, d.lane(""), &lock)
 			if !found || (err == nil) != (failure == "") || !lock || selectTx.commits != 1 || selectTx.rolls != 0 || session.begins != 2 || session.execs != 0 {
 				t.Fatalf("fanout lifecycle found=%v err=%v selection=%+v fanout=%+v session=%+v", found, err, selectTx, fanoutTx, session)
 			}
@@ -239,7 +239,7 @@ func TestUnitDispatcherManagerAbnormalExit(t *testing.T) {
 						}
 					}()
 					lock := false
-					_, err := d.dispatch(ctx, session, "", &lock)
+					_, err := d.dispatch(ctx, session, d.lane(""), &lock)
 					if outcome == "cancel" && !errors.Is(err, context.Canceled) {
 						t.Errorf("cancellation lost: %v", err)
 					}
@@ -268,7 +268,7 @@ func TestUnitDispatcherRejectsForeignManagerContext(t *testing.T) {
 	d := fin244Dispatcher(func(context.Context, Event) error { t.Fatal("foreign context delivered"); return nil })
 	lock := false
 	err := outer.Run(t.Context(), func(ctx context.Context) error {
-		_, err := d.dispatch(ctx, lease, "", &lock)
+		_, err := d.dispatch(ctx, lease, d.lane(""), &lock)
 		return err
 	})
 	if !errors.Is(err, postgres.ErrForeignTransaction) || lease.begins != 0 || lease.execs != 0 || lock || outerTx.commits != 0 || outerTx.rolls != 1 {
@@ -299,7 +299,7 @@ func TestUnitDispatcherPersistsOnlyBoundedDeliveryClassifications(t *testing.T) 
 				session.execErr = persistErr
 			}
 			lock := false
-			found, err := d.dispatch(t.Context(), session, "x", &lock)
+			found, err := d.dispatch(t.Context(), session, d.lane("x"), &lock)
 			if !found || !lock || tx.commits != 1 || session.begins != 1 || session.execs != 1 {
 				t.Fatalf("delivery lifecycle found=%v err=%v tx=%+v session=%+v", found, err, tx, session)
 			}
