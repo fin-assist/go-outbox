@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fin-assist/go-postgres"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -102,7 +103,7 @@ type unitConn struct {
 	onWait             func()
 }
 
-func (c *unitConn) Begin(context.Context) (pgx.Tx, error) { return c.tx, c.beginErr }
+func (c *unitConn) BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error) { return c.tx, c.beginErr }
 func (c *unitConn) Exec(_ context.Context, q string, a ...any) (pgconn.CommandTag, error) {
 	c.calls = append(c.calls, unitCall{q, a})
 	return pgconn.NewCommandTag("UPDATE 1"), c.execErr
@@ -256,7 +257,7 @@ func TestUnitDispatcherSelectionAndLeaseOwnership(t *testing.T) {
 			if conn.detached != lockPossible || conn.released == lockPossible {
 				t.Fatal("session lock could escape pool ownership")
 			}
-			if stage != "begin" && !tx.rolledBack {
+			if stage != "begin" && !tx.committed && !tx.rolledBack {
 				t.Fatal("transaction rollback missing")
 			}
 		})
@@ -286,12 +287,12 @@ func TestUnitDispatcherFanoutIsAtomic(t *testing.T) {
 			}
 			d := unitDispatcher(&unitPool{conn: conn}, routes)
 			r := row{id: 42, event: Event{Topic: "settings", Key: "user", Payload: []byte("payload")}, created: d.options.Now().Add(-time.Hour)}
-			err := d.fanout(t.Context(), conn, r)
+			err := d.fanout(t.Context(), conn, postgres.New(conn), r)
 			if (stage == "success" || stage == "unknown") != (err == nil) {
 				t.Fatal(err)
 			}
 			if stage == "success" {
-				if !tx.committed || !tx.rolledBack || len(tx.calls) != 3 {
+				if !tx.committed || tx.rolledBack || len(tx.calls) != 3 {
 					t.Fatal("fanout not atomic")
 				}
 				for _, call := range tx.calls[:2] {

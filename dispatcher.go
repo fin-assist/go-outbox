@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	postgres "github.com/fin-assist/go-postgres"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -104,8 +106,13 @@ func NewDispatcher(o Options) (*Dispatcher, error) {
 // No RPC runs inside a transaction. A short row-lock transaction obtains a session advisory lock;
 // the dedicated connection holds it through RPC and acknowledgement. Process death frees the
 // lock and leaves the row. An uncertain acknowledgement may lead to a duplicate delivery.
+// ctx must be a service lifecycle context, without a go-postgres transaction. A transaction
+// context returns postgres.ErrForeignTransaction before acquiring connections or starting workers.
 // Cancellation is returned as ctx.Err(). A second concurrent Run returns an error.
 func (d *Dispatcher) Run(ctx context.Context) error {
+	if _, ok := postgres.Tx(ctx); ok {
+		return postgres.ErrForeignTransaction
+	}
 	if !d.running.CompareAndSwap(false, true) {
 		return errors.New("outbox: already running")
 	}
@@ -246,65 +253,76 @@ func (d *Dispatcher) oneFor(ctx context.Context, targetFilter string) (bool, err
 		defer cancel()
 		_ = c.closeDetached(closeCtx)
 	}()
-	tx, err := c.Begin(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	var recovery bool
-	if err = tx.QueryRow(ctx, `SELECT pg_is_in_recovery()`).Scan(&recovery); err != nil {
-		return false, err
-	}
-	if recovery {
-		return false, errors.New("outbox: primary required")
-	}
+	return d.dispatch(ctx, c, targetFilter, &lockMayExist)
+}
+
+// dispatchSession is one acquired connection lease, never the shared pool. Both
+// transactions and their intervening delivery must retain the session advisory lock.
+type dispatchSession interface {
+	postgres.Beginner
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func (d *Dispatcher) dispatch(ctx context.Context, c dispatchSession, targetFilter string, lockMayExist *bool) (bool, error) {
+	transactions := postgres.New(c)
 	var selected *row
-	var afterTime time.Time
-	var afterID int64
-	for selected == nil {
-		rows, queryErr := tx.Query(ctx, `SELECT id,next_attempt_at FROM outbox_events WHERE next_attempt_at<=$1 AND (next_attempt_at,id)>($2,$3) AND (target=$4 OR ($4='' AND target<>ALL($5::text[]))) ORDER BY next_attempt_at,id LIMIT 50 FOR UPDATE SKIP LOCKED`, d.options.Now(), afterTime, afterID, targetFilter, d.targetNames())
-		if queryErr != nil {
-			return false, queryErr
+	err := transactions.Run(ctx, func(ctx context.Context) error {
+		tx, _ := transactions.Tx(ctx) // Run supplies this manager's transaction.
+		var recovery bool
+		if err := tx.QueryRow(ctx, `SELECT pg_is_in_recovery()`).Scan(&recovery); err != nil {
+			return err
 		}
-		type candidate struct {
-			id  int64
-			due time.Time
+		if recovery {
+			return errors.New("outbox: primary required")
 		}
-		var candidates []candidate
-		for rows.Next() {
-			var candidate candidate
-			if err = rows.Scan(&candidate.id, &candidate.due); err != nil {
-				rows.Close()
-				return false, err
+		var afterTime time.Time
+		var afterID int64
+		for selected == nil {
+			rows, queryErr := tx.Query(ctx, `SELECT id,next_attempt_at FROM outbox_events WHERE next_attempt_at<=$1 AND (next_attempt_at,id)>($2,$3) AND (target=$4 OR ($4='' AND target<>ALL($5::text[]))) ORDER BY next_attempt_at,id LIMIT 50 FOR UPDATE SKIP LOCKED`, d.options.Now(), afterTime, afterID, targetFilter, d.targetNames())
+			if queryErr != nil {
+				return queryErr
 			}
-			candidates = append(candidates, candidate)
-		}
-		rows.Close()
-		if err = rows.Err(); err != nil {
-			return false, err
-		}
-		if len(candidates) == 0 {
-			break
-		}
-		for _, candidate := range candidates {
-			afterTime, afterID = candidate.due, candidate.id
-			var locked bool
-			lockMayExist = true
-			if err = tx.QueryRow(ctx, `SELECT pg_try_advisory_lock(-$1::bigint)`, candidate.id).Scan(&locked); err != nil {
-				return false, err
+			type candidate struct {
+				id  int64
+				due time.Time
 			}
-			lockMayExist = locked
-			if locked {
-				r := row{id: candidate.id}
-				if err = tx.QueryRow(ctx, `SELECT topic,event_key,payload,target,attempts,created_at FROM outbox_events WHERE id=$1`, r.id).Scan(&r.event.Topic, &r.event.Key, &r.event.Payload, &r.target, &r.attempts, &r.created); err != nil {
-					return false, err
+			var candidates []candidate
+			for rows.Next() {
+				var candidate candidate
+				if err := rows.Scan(&candidate.id, &candidate.due); err != nil {
+					rows.Close()
+					return err
 				}
-				selected = &r
+				candidates = append(candidates, candidate)
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			if len(candidates) == 0 {
 				break
 			}
+			for _, candidate := range candidates {
+				afterTime, afterID = candidate.due, candidate.id
+				var locked bool
+				*lockMayExist = true
+				if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_lock(-$1::bigint)`, candidate.id).Scan(&locked); err != nil {
+					return err
+				}
+				*lockMayExist = locked
+				if locked {
+					r := row{id: candidate.id}
+					if err := tx.QueryRow(ctx, `SELECT topic,event_key,payload,target,attempts,created_at FROM outbox_events WHERE id=$1`, r.id).Scan(&r.event.Topic, &r.event.Key, &r.event.Payload, &r.target, &r.attempts, &r.created); err != nil {
+						return err
+					}
+					selected = &r
+					break
+				}
+			}
 		}
-	}
-	if err = tx.Commit(ctx); err != nil {
+		return nil
+	})
+	if err != nil {
 		return false, err
 	}
 	if selected == nil {
@@ -312,7 +330,7 @@ func (d *Dispatcher) oneFor(ctx context.Context, targetFilter string) (bool, err
 	}
 	r := *selected
 	if r.target == "" {
-		return true, d.fanout(ctx, c, r)
+		return true, d.fanout(ctx, c, transactions, r)
 	}
 	send := d.options.Routes[r.event.Topic][r.target]
 	var failure error
@@ -343,26 +361,22 @@ func (d *Dispatcher) oneFor(ctx context.Context, targetFilter string) (bool, err
 	}
 	return true, errRetryScheduled
 }
-func (d *Dispatcher) fanout(ctx context.Context, c primaryConn, r row) error {
+func (d *Dispatcher) fanout(ctx context.Context, c dispatchSession, transactions *postgres.Manager, r row) error {
 	targets := d.options.Routes[r.event.Topic]
 	if len(targets) == 0 {
 		_, err := c.Exec(ctx, `UPDATE outbox_events SET next_attempt_at=$2,last_error='route_unconfigured' WHERE id=$1`, r.id, d.options.Now().Add(5*time.Minute))
 		return err
 	}
-	tx, err := c.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	for target := range targets {
-		if _, err = tx.Exec(ctx, `INSERT INTO outbox_events(topic,event_key,payload,target,next_attempt_at,created_at) VALUES($1,$2,$3,$4,$5,$6)`, r.event.Topic, r.event.Key, r.event.Payload, target, d.options.Now(), r.created); err != nil {
-			return err
+	return transactions.Run(ctx, func(ctx context.Context) error {
+		tx, _ := transactions.Tx(ctx) // Run supplies this manager's transaction.
+		for target := range targets {
+			if _, err := tx.Exec(ctx, `INSERT INTO outbox_events(topic,event_key,payload,target,next_attempt_at,created_at) VALUES($1,$2,$3,$4,$5,$6)`, r.event.Topic, r.event.Key, r.event.Payload, target, d.options.Now(), r.created); err != nil {
+				return err
+			}
 		}
-	}
-	if _, err = tx.Exec(ctx, `DELETE FROM outbox_events WHERE id=$1`, r.id); err != nil {
+		_, err := tx.Exec(ctx, `DELETE FROM outbox_events WHERE id=$1`, r.id)
 		return err
-	}
-	return tx.Commit(ctx)
+	})
 }
 func backoff(attempt int, jitter float64) time.Duration {
 	if attempt > 9 {

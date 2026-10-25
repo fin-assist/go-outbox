@@ -15,7 +15,7 @@ type primaryPool interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 type primaryConn interface {
-	Begin(context.Context) (pgx.Tx, error)
+	BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 	Release()
 	closeDetached(context.Context) error
