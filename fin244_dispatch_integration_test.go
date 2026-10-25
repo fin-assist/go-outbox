@@ -129,7 +129,7 @@ func TestIntegrationDispatcherAbnormalExitClosesLockedSession(t *testing.T) {
 			publish(t, pool, "t", true)
 			d := dispatcher(t, pool, Routes{"t": {"x": func(context.Context, Event) error {
 				if outcome == "panic" {
-					panic("delivery panic")
+					panic("delivery panic with PRIVATE payload")
 				}
 				runtime.Goexit()
 				return nil
@@ -137,18 +137,24 @@ func TestIntegrationDispatcherAbnormalExitClosesLockedSession(t *testing.T) {
 			if _, err := d.oneFor(t.Context(), ""); err != nil {
 				t.Fatal(err)
 			}
-			done := make(chan struct{})
+			done := make(chan error, 1)
 			go func() {
+				// A recipient panic must stay inside the dispatcher (FIN-281).
 				defer close(done)
-				defer func() {
-					if p := recover(); (p != nil) != (outcome == "panic") {
-						t.Errorf("unexpected panic: %v", p)
-					}
-				}()
-				_, _ = d.oneFor(t.Context(), "x")
+				found, err := d.oneFor(t.Context(), "x")
+				if !found {
+					t.Error("abnormal delivery lost its claimed row")
+				}
+				done <- err
 			}()
 			select {
-			case <-done:
+			case err, ok := <-done:
+				if outcome == "panic" && (!ok || !errors.Is(err, errRetryScheduled)) {
+					t.Fatalf("panic was not handled as a failed delivery: ok=%v err=%v", ok, err)
+				}
+				if outcome == "goexit" && ok {
+					t.Fatalf("goexit returned normally: %v", err)
+				}
 			case <-time.After(3 * time.Second):
 				t.Fatal("abnormal delivery failed to terminate")
 			}
@@ -156,7 +162,22 @@ func TestIntegrationDispatcherAbnormalExitClosesLockedSession(t *testing.T) {
 			if pending(t, pool) != 1 || pool.Stat().AcquiredConns() != 0 {
 				t.Fatal("abnormal delivery lost durable work or leaked a connection")
 			}
-			// The next worker can deliver the same durable row.
+			var attempts int
+			var lastError string
+			if err := pool.QueryRow(t.Context(), `SELECT attempts,last_error FROM outbox_events`).Scan(&attempts, &lastError); err != nil {
+				t.Fatal(err)
+			}
+			wantAttempts, wantError := 1, "delivery_failed"
+			if outcome == "goexit" {
+				wantAttempts, wantError = 0, ""
+			}
+			if attempts != wantAttempts || lastError != wantError {
+				t.Fatalf("attempt recorded as %d/%q, want %d/%q", attempts, lastError, wantAttempts, wantError)
+			}
+			// The next worker can deliver the same durable row once it is due.
+			if _, err := pool.Exec(t.Context(), `UPDATE outbox_events SET next_attempt_at=now()-interval '1 second'`); err != nil {
+				t.Fatal(err)
+			}
 			d.options.Routes["t"]["x"] = func(context.Context, Event) error { return nil }
 			if found, err := d.oneFor(t.Context(), "x"); !found || err != nil || pending(t, pool) != 0 {
 				t.Fatalf("retry after abnormal exit: %v %v", found, err)

@@ -23,7 +23,8 @@ type Event struct {
 }
 
 // Delivery sends a system RPC. It must honour cancellation and return only after the call ends.
-// It may run concurrently for distinct configured targets. Recipients must handle
+// It may run concurrently for distinct configured targets. A panic is recovered and handled as
+// a failed delivery with the usual retry; runtime.Goexit is not. Recipients must handle
 // duplicate and out-of-order versions, and acknowledge tombstoned users.
 type Delivery func(context.Context, Event) error
 
@@ -416,8 +417,12 @@ func (d *Dispatcher) dispatch(ctx context.Context, c dispatchSession, s selectio
 		failure = errors.New("route_unconfigured")
 	} else {
 		call, cancel := context.WithTimeout(ctx, 30*time.Second)
-		failure = send(call, r.event)
+		failure = deliver(call, send, r.event)
 		cancel()
+		if errors.Is(failure, errDeliveryPanic) {
+			// The panic value may carry payload data; only the configured target name is logged.
+			d.options.Logger.WarnContext(ctx, "outbox delivery panicked", "target", r.target)
+		}
 	}
 	if failure == nil {
 		_, err = c.Exec(ctx, `DELETE FROM outbox_events WHERE id=$1`, r.id)
@@ -438,6 +443,26 @@ func (d *Dispatcher) dispatch(ctx context.Context, c dispatchSession, s selectio
 		return true, nil
 	}
 	return true, errRetryScheduled
+}
+
+var errDeliveryPanic = errors.New("outbox: delivery panicked")
+
+// deliver turns a recipient panic into a failed attempt, so one poisoned event retries with
+// backoff instead of crashing every producer pod that claims it. runtime.Goexit cannot be
+// intercepted and still unwinds through the caller's connection cleanup. The returned flag,
+// not recover's value, detects the panic: with GODEBUG=panicnil=1 panic(nil) recovers as nil
+// and would otherwise acknowledge (delete) an undelivered event.
+func deliver(ctx context.Context, send Delivery, event Event) (err error) {
+	returned := false
+	defer func() {
+		if !returned {
+			_ = recover()
+			err = errDeliveryPanic
+		}
+	}()
+	err = send(ctx, event)
+	returned = true
+	return err
 }
 func (d *Dispatcher) fanout(ctx context.Context, c dispatchSession, transactions *postgres.Manager, r row) error {
 	targets := d.options.Routes[r.event.Topic]

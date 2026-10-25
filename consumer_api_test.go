@@ -388,3 +388,66 @@ func TestAPIConfigurationAndPublisherContracts(t *testing.T) {
 		t.Fatal("closed transaction accepted or diagnostic leaked", err)
 	}
 }
+
+// FIN-281: a recipient panic is a failed delivery; the service process, Run and other
+// recipients keep working and the poisoned event stays durable for retry.
+func TestAPIRecipientPanicDoesNotStopService(t *testing.T) {
+	pool := database(t)
+	healthy := make(chan outbox.Event, 1)
+	routes := outbox.Routes{"user.deleted": {
+		"analytics": func(context.Context, outbox.Event) error { panic("PRIVATE payload") },
+		"assistant": func(_ context.Context, e outbox.Event) error { healthy <- e; return nil },
+	}}
+	d := dispatcher(t, pool, routes, time.Now)
+	tx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := outbox.NewPublisher(provider{tx}, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = p.Publish(t.Context(), "user.deleted", "user", []byte("purge")); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+	select {
+	case e := <-healthy:
+		if string(e.Payload) != "purge" {
+			t.Fatal("healthy recipient got another event")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("healthy recipient was not served next to a panicking one")
+	}
+	deadline := time.After(5 * time.Second)
+	for {
+		var target, lastError string
+		var attempts int
+		err := pool.QueryRow(t.Context(), `SELECT target,attempts,last_error FROM outbox_events`).Scan(&target, &attempts, &lastError)
+		if err == nil && target == "analytics" && attempts >= 1 && lastError == "delivery_failed" {
+			break
+		}
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatal(err)
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("panicking delivery not kept for retry: %q %d %q %v", target, attempts, lastError, err)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not stop after a recipient panic")
+	}
+}
