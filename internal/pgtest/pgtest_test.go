@@ -202,6 +202,29 @@ func TestIntegrationCheckUpDownUpCatchesBadMigrations(t *testing.T) {
 	}
 }
 
+func TestIntegrationApplyFailsOnABadMigration(t *testing.T) {
+	// The database comes from the real test, so a failure recorded below can only come
+	// from Apply, not from the server selection.
+	dsn := DSN(t)
+	files := fstest.MapFS{
+		"000001_a.up.sql":   file("CREATE TABLE"),
+		"000001_a.down.sql": file("SELECT 1"),
+	}
+	r := &recorder{TB: t, noDatabase: true}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		Apply(r, dsn, "lib_apply_migrations", files)
+	}()
+	<-done
+	if !r.failed {
+		t.Fatal("Apply passed a migration with invalid SQL")
+	}
+	if want := "lib_apply_migrations: migration step failed"; !strings.Contains(r.msg, want) {
+		t.Fatalf("failure %q, want the migrate.Up error containing %q", r.msg, want)
+	}
+}
+
 // recorder records the first fatal failure of the code under test instead of failing the
 // test itself; like testing.T it stops the goroutine on Fatal.
 type recorder struct {
