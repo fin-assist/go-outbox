@@ -11,12 +11,25 @@ import sys
 import changelog
 
 
-# These three immutable v0.1.0 tags predate their CHANGELOG sections (FIN-312).
-# Scope by exact module/version/SHA, never by a missing section or tag ancestry alone.
+# Published tags whose immutable trees predate their CHANGELOG sections.
+# Audited against origin on 2026-10-26; exact module/version/SHA only.
 LEGACY_RELEASES = {
+    ("github.com/fin-assist/go-grpc", "v0.2.0"): "47193ac83a3e1c35a678166f2147e98abb2d9322",
+    ("github.com/fin-assist/go-idempotency", "v0.1.0"): "be968e2dc4d50ed3577d75b91e6ee58aad55b420",
+    ("github.com/fin-assist/go-idempotency", "v0.2.0"): "67fc00cc91064d883f452c3982fdcb310b7e4680",
+    ("github.com/fin-assist/go-idempotency", "v0.3.0"): "aaad7ad3aaff61b9a2c9e13681ff82ccf7ee9b11",
+    ("github.com/fin-assist/go-idempotency", "v0.4.0"): "9be196399c8f55c737fc83274e64b36f4d7d225a",
+    ("github.com/fin-assist/go-idempotency", "v0.5.0"): "9fa6de5d6cf4cefe1ba8bf8b346ef21bb1a0932f",
     ("github.com/fin-assist/go-identity", "v0.1.0"): "f44f31941c19197cf92c007d4fe087b1d76557b0",
+    ("github.com/fin-assist/go-identity", "v0.2.0"): "ec005cfecb4fcbaf4e10b9bdc1d6eebfbaff950b",
+    ("github.com/fin-assist/go-migrate", "v0.2.0"): "16bdd5875857fa7a5f2ada9672b9006ab15a60d7",
     ("github.com/fin-assist/go-outbox", "v0.1.0"): "d5043a4e5791338eb1d3c3ae0ba07d4bfb95a402",
+    ("github.com/fin-assist/go-outbox", "v0.2.0"): "175cf7b94f2ad6c85759fe8c5993cf0b4d9dc203",
+    ("github.com/fin-assist/go-postgres", "v0.1.0"): "1f66a939db86e8318d872142bee17c8844841478",
+    ("github.com/fin-assist/go-postgres", "v0.1.2"): "811ad21f373b4d753a7b2c3de503d295f49ce176",
+    ("github.com/fin-assist/go-postgres", "v0.3.0"): "69e396a55c19b956ccb9b4b793107c8aa7697554",
     ("github.com/fin-assist/go-tombstone", "v0.1.0"): "0d6edd6ca9419c99bcb490cdb732c962ba6887d6",
+    ("github.com/fin-assist/go-worker", "v0.1.1"): "488cf47b04fe95492a620c8ba245c09542bdec26",
 }
 
 
@@ -53,13 +66,30 @@ def release_commit(version: str) -> str:
     if legacy:
         git("merge-base", "--is-ancestor", legacy, "HEAD")
         return legacy
+    # The earliest introduction survives a later revert of an unpublished
+    # release. The nearest same-version segment would mistake that revert for
+    # a new candidate and reject the legitimate older published tag.
     commits = git("rev-list", "--first-parent", "HEAD").splitlines()
-    release = commits[0]
-    for parent in commits[1:]:
-        if version_at(parent) != version:
-            break
-        release = parent
-    return release
+    for commit in reversed(commits):
+        if version_at(commit) == version:
+            return commit
+    raise ValueError(f"CHANGELOG version {version} is absent from checked first-parent history.")
+
+
+def matches_release(commit: str, release: str, head: str, version: str) -> bool:
+    """Candidates/pins need exact identity; development accepts the release series.
+
+    Release publication already permits a later main commit with the same
+    CHANGELOG version. Only subsequent development can use that historical tag;
+    it cannot validate a different candidate or a PR's preparation commit.
+    """
+    if commit == release:
+        return True
+    if head == release or release in LEGACY_RELEASES.values():
+        return False
+    commits = git("rev-list", "--first-parent", "HEAD").splitlines()
+    series = commits[:commits.index(release)]
+    return commit in series and version_at(commit) == version
 
 
 def verdict(report: str, version: str) -> str:
@@ -95,15 +125,15 @@ def check() -> None:
     candidate = bool(next_version) and release == head
     if local and before != local:
         raise ValueError("Local and remote release tags disagree (or the remote tag is missing).")
-    if before and before != release:
-        raise ValueError("The published release tag does not identify the checked release commit.")
+    if before and not matches_release(before, release, head, next_version):
+        raise ValueError(f"Published {next_version} at {before} does not match release {release} (HEAD {head}).")
     bases = [tag for tag in tags if not candidate or tag != next_version]
     if candidate and before == head:
         # A historical release rerun can see tags published after its checkout
         # commit. Its compatibility base is still the preceding release.
         bases = [tag for tag in bases if changelog.version_key(tag) < changelog.version_key(next_version)]
     base = bases[0] if bases else "none"
-    if not candidate and before:
+    if not candidate and before and (not bases or changelog.version_key(next_version) > changelog.version_key(base)):
         base = next_version
     args = [f"-base={base}"]
     if candidate:
@@ -123,9 +153,9 @@ def check() -> None:
             summary.write(f"### API против {base}\n\n```text\n{report}\n```\n")
     after = remote_commit(next_version) if next_version else ""
     if before and after != before:
-        raise ValueError("The remote release tag changed during the check.")
-    if after and after != release:
-        raise ValueError("The published release tag does not identify the checked release commit.")
+        raise ValueError(f"Remote {next_version} changed from {before} to {after or 'missing'} (release {release}).")
+    if after and not matches_release(after, release, head, next_version):
+        raise ValueError(f"Published {next_version} at {after} does not match release {release} (HEAD {head}).")
     if candidate:
         outcome = verdict(report, next_version)
         if result.returncode not in (0, 1) or outcome == "invalid":

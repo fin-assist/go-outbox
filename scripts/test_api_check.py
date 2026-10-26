@@ -14,20 +14,13 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = "v0.1.1"
-EXISTS = (f"# summary\n{VERSION} is not a valid semantic version for this release.\n"
-          f"version {VERSION} already exists\n\nexit status 1\n")
-VALID = f"# summary\n{VERSION} is a valid semantic version for this release.\n"
-# Captured with the pinned gorelease and a file:// Go proxy containing both
-# v1.0.0 and v1.0.1: the published PATCH also removes Greeting from the public API.
-EXISTS_INCOMPATIBLE_V1 = """# example.com/library
-## incompatible changes
-Greeting: removed
+# Complete stdout + stderr captured from the pinned go run on a file:// proxy.
+RECORDED_GORELEASE = 'golang.org/x/exp/cmd/gorelease@v0.0.0-20261014143641-f0251eb4aa3e'
+EXISTS = '# summary\nv0.1.1 is not a valid semantic version for this release.\nversion v0.1.1 already exists\n\nexit status 1\n'
+VALID = '# summary\nv0.1.1 is a valid semantic version for this release.\n'
+EXISTS_INCOMPATIBLE_V1 = '# example.invalid/fin264-report-fixture\n## incompatible changes\nGreeting: removed\n\n# summary\nv1.0.1 is not a valid semantic version for this release.\nThere are incompatible changes.\n\nexit status 1\n'
+EXISTS_COMPATIBLE_PATCH_V1 = '# example.invalid/fin264-report-fixture\n## compatible changes\nExtra: added\n\n# summary\nv1.0.1 is not a valid semantic version for this release.\nThere are compatible changes, but the minor version is not incremented\nover the base version (v1.0.0).\n\nexit status 1\n'
 
-# summary
-v1.0.1 is not a valid semantic version for this release.
-There are incompatible changes.
-
-"""
 
 
 class APICheckTests(unittest.TestCase):
@@ -128,6 +121,10 @@ sys.exit(state.get("status", 0))
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         return calls
 
+    def test_captured_reports_require_the_recorded_tool_pin(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+        self.assertEqual(workflow["env"]["GORELEASE"], RECORDED_GORELEASE)
+
     def test_pending_candidate_validates_against_previous_release(self):
         calls = self.assert_passes()
         self.assertIn("-base=v0.1.0", calls[0])
@@ -190,20 +187,23 @@ sys.exit(state.get("status", 0))
         self.git(self.owner, "tag", "-a", "-m", "Published v1 patch", "v1.0.1", head)
         self.git(self.clone, "fetch", "--tags", "origin")
         self.git(self.clone, "checkout", "--detach", head)
-        calls = self.assert_fails(report=EXISTS_INCOMPATIBLE_V1, status=1)
-        self.assertIn("-base=v1.0.0", calls[0])
-        self.assertIn("-version=v1.0.1", calls[0])
+        for report in (EXISTS_INCOMPATIBLE_V1, EXISTS_COMPATIBLE_PATCH_V1):
+            with self.subTest(report=report):
+                calls = self.assert_fails(report=report, status=1)
+                self.assertIn("-base=v1.0.0", calls[-1])
+                self.assertIn("-version=v1.0.1", calls[-1])
 
     def test_release_parent_can_predate_changelog(self):
         self.git(self.owner, "rm", "CHANGELOG.md")
         self.git(self.owner, "commit", "-m", "Parent without changelog")
-        (self.owner / "CHANGELOG.md").write_text((self.clone / "CHANGELOG.md").read_text())
+        (self.owner / "CHANGELOG.md").write_text(
+            (self.clone / "CHANGELOG.md").read_text().replace(VERSION, "v0.1.2"))
         self.git(self.owner, "add", "CHANGELOG.md")
         self.git(self.owner, "commit", "-m", "Introduce changelog release")
         self.git(self.clone, "fetch", "origin")
         self.git(self.clone, "checkout", "--detach", self.git(self.owner, "rev-parse", "HEAD"))
-        calls = self.assert_passes()
-        self.assertIn("-version=" + VERSION, calls[0])
+        calls = self.assert_passes(report=VALID.replace(VERSION, "v0.1.2"))
+        self.assertIn("-version=v0.1.2", calls[0])
 
     def test_valid_version_with_dependency_diagnostic_keeps_existing_policy(self):
         self.assert_passes(report="# diagnostics\nretracted dependency\n\n" + VALID + "exit status 1\n",
@@ -347,6 +347,118 @@ sys.exit(state.get("status", 0))
         (self.clone / "go.mod").write_text("module github.com/fin-assist/go-identity\n")
         calls = self.assert_passes()
         self.assertIn("-version=" + VERSION, calls[0])
+
+    def test_later_main_tag_is_informational_but_cannot_validate_original_candidate(self):
+        self.advance_checkout()
+        later = self.git(self.clone, "rev-parse", "HEAD")
+        self.git(self.owner, "fetch", str(self.clone), later)
+        self.publish(commit=later, fetch=True)
+        calls = self.assert_passes(report="# summary\nSuggested version: v0.1.2\n")
+        self.assertIn("-base=" + VERSION, calls[0])
+        self.assertFalse(any(arg.startswith("-version=") for arg in calls[0]))
+        # The exact release-candidate checkout must still reject this other commit.
+        self.git(self.clone, "checkout", "--detach", self.head)
+        self.assertEqual(self.assert_fails(report=EXISTS, status=1), calls)
+
+    def test_later_main_tag_published_during_development_is_accepted(self):
+        self.advance_checkout()
+        later = self.git(self.clone, "rev-parse", "HEAD")
+        self.git(self.owner, "fetch", str(self.clone), later)
+        calls = self.assert_passes(report="# summary\nCannot suggest a release version.\n",
+                                  status=1, publish=later)
+        self.assertFalse(any(arg.startswith("-version=") for arg in calls[0]))
+
+    def test_legacy_pin_cannot_be_replaced_by_a_later_version_series_commit(self):
+        for sha in api_check.LEGACY_RELEASES.values():
+            self.assertFalse(api_check.matches_release("later", sha, "head", "v0.1.0"))
+
+    def test_development_uses_newest_tag_when_changelog_lags(self):
+        self.publish(fetch=True)
+        self.advance_checkout()
+        later = self.git(self.clone, "rev-parse", "HEAD")
+        self.git(self.owner, "fetch", str(self.clone), later)
+        self.git(self.owner, "tag", "v0.1.2", later)
+        self.git(self.clone, "fetch", "--tags", "origin")
+        calls = self.assert_passes(report="# summary\nSuggested version: v0.1.3\n")
+        self.assertIn("-base=v0.1.2", calls[0])
+        self.assertFalse(any(arg.startswith("-version=") for arg in calls[0]))
+
+    def test_revert_of_unpublished_release_keeps_historical_release_informational(self):
+        (self.owner / "CHANGELOG.md").write_text(self.git(self.owner, "show", self.previous + ":CHANGELOG.md") + "\n")
+        self.git(self.owner, "add", "CHANGELOG.md")
+        self.git(self.owner, "commit", "-m", "Revert unpublished release")
+        self.git(self.clone, "fetch", "origin")
+        self.git(self.clone, "checkout", "--detach", self.git(self.owner, "rev-parse", "HEAD"))
+        calls = self.assert_passes(report="# summary\nSuggested version: v0.1.1\n")
+        self.assertIn("-base=v0.1.0", calls[0])
+        self.assertFalse(any(arg.startswith("-version=") for arg in calls[0]))
+
+    def make_legacy_history(self):
+        """Inject only fixture SHA data; all production Git/remote checks still execute."""
+        old_root = self.previous
+        self.git(self.owner, "checkout", "-B", "main", old_root)
+        (self.owner / "CHANGELOG.md").write_text("# Changelog\n\n## [Unreleased]\n")
+        (self.owner / "go.mod").write_text("module github.com/fin-assist/go-identity\n")
+        self.git(self.owner, "add", ".")
+        self.git(self.owner, "commit", "-m", "Legacy release without section")
+        pinned = self.git(self.owner, "rev-parse", "HEAD")
+        self.git(self.owner, "tag", "-f", "v0.1.0", pinned)
+        (self.owner / "CHANGELOG.md").write_text("# Changelog\n\n## [Unreleased]\n\n"
+                                               "## [v0.1.0] — 2026-10-24\n\n- Restored history.\n")
+        self.git(self.owner, "add", ".")
+        self.git(self.owner, "commit", "-m", "Record legacy release after publication")
+        current = self.git(self.owner, "rev-parse", "HEAD")
+        self.git(self.clone, "fetch", "--force", "--tags", "origin")
+        self.git(self.clone, "checkout", "--detach", current)
+        script = self.clone / "scripts/api_check.py"
+        script.write_text(script.read_text().replace("f44f31941c19197cf92c007d4fe087b1d76557b0", pinned))
+        return pinned, current, old_root
+
+    def test_legacy_workflow_accepts_exact_published_history(self):
+        self.make_legacy_history()
+        calls = self.assert_passes(report="# summary\nSuggested version: v0.1.1\n")
+        self.assertIn("-base=v0.1.0", calls[0])
+        self.assertFalse(any(arg.startswith("-version=") for arg in calls[0]))
+
+    def test_legacy_workflow_rejects_a_different_published_commit(self):
+        _, current, _ = self.make_legacy_history()
+        self.git(self.owner, "tag", "-f", "v0.1.0", current)
+        self.git(self.clone, "fetch", "--force", "--tags", "origin")
+        self.assertEqual(self.assert_fails(), [])
+
+    def test_legacy_workflow_rejects_existing_pin_outside_checkout_history(self):
+        _, _, old_root = self.make_legacy_history()
+        self.git(self.clone, "checkout", "--detach", old_root)
+        (self.clone / "go.mod").write_text("module github.com/fin-assist/go-identity\n")
+        self.assertEqual(self.assert_fails(), [])
+
+    def make_release_merge(self):
+        self.git(self.owner, "checkout", "-B", "main", self.previous)
+        self.git(self.owner, "merge", "--no-ff", "-m", "Merge release PR", self.head)
+        self.head = self.git(self.owner, "rev-parse", "HEAD")
+        self.git(self.clone, "fetch", "origin")
+        self.git(self.clone, "checkout", "--detach", self.head)
+
+    def test_release_merge_accepts_publication_on_merge_commit(self):
+        self.make_release_merge()
+        calls = self.assert_passes(report=EXISTS, status=1, publish=self.head, annotated=True)
+        self.assertIn("-version=" + VERSION, calls[0])
+        self.assertIn("-base=v0.1.0", calls[0])
+
+    def test_pr_merge_after_release_merge_is_informational(self):
+        self.make_release_merge()
+        self.publish(fetch=True)
+        self.git(self.owner, "checkout", "-b", "feature")
+        (self.owner / "feature.txt").write_text("Ordinary PR\n")
+        self.git(self.owner, "add", "feature.txt")
+        self.git(self.owner, "commit", "-m", "Ordinary feature")
+        self.git(self.owner, "checkout", "main")
+        self.git(self.owner, "merge", "--no-ff", "-m", "Synthetic ordinary PR merge", "feature")
+        self.git(self.clone, "fetch", "origin")
+        self.git(self.clone, "checkout", "--detach", self.git(self.owner, "rev-parse", "HEAD"))
+        calls = self.assert_passes(report="# summary\nSuggested version: v0.1.2\n")
+        self.assertIn("-base=" + VERSION, calls[0])
+        self.assertFalse(any(arg.startswith("-version=") for arg in calls[0]))
 
 
 if __name__ == "__main__":
