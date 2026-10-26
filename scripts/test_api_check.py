@@ -69,6 +69,9 @@ if state.get("publish"):
 if state.get("remote_error"):
     subprocess.run(["git", "remote", "set-url", "origin", str(root / "missing")],
                    check=True, capture_output=True, timeout=10)
+if state.get("delete"):
+    subprocess.run(["git", "-C", str(root / "owner"), "tag", "-d", "v0.1.1"],
+                   check=True, capture_output=True, timeout=10)
 print(state["report"], end="")
 sys.exit(state.get("status", 0))
 ''')
@@ -129,10 +132,15 @@ sys.exit(state.get("status", 0))
         self.assert_passes(report=EXISTS, status=1)
 
     def test_already_published_same_commit_still_compares_previous_version(self):
-        self.publish(fetch=True)
-        calls = self.assert_passes(report=EXISTS, status=1)
-        self.assertIn("-base=v0.1.0", calls[0])
-        self.assertIn("-version=" + VERSION, calls[0])
+        for annotated in (False, True):
+            with self.subTest(annotated=annotated):
+                if annotated:
+                    self.git(self.owner, "tag", "-d", VERSION)
+                    self.git(self.clone, "tag", "-d", VERSION)
+                self.publish(annotated=annotated, fetch=True)
+                calls = self.assert_passes(report=EXISTS, status=1)
+                self.assertIn("-base=v0.1.0", calls[-1])
+                self.assertIn("-version=" + VERSION, calls[-1])
 
     def test_foreign_commit_before_or_during_check_fails(self):
         calls = self.assert_fails(report=EXISTS, status=1, publish=self.previous)
@@ -196,6 +204,11 @@ sys.exit(state.get("status", 0))
 
     def test_abnormal_tool_exit_cannot_reuse_a_valid_summary(self):
         self.assert_fails(report=VALID, status=2)
+        self.assert_fails(report=VALID + "exit status 2\n", status=1)
+
+    def test_remote_tag_deletion_during_check_fails(self):
+        self.publish(fetch=True)
+        self.assert_fails(report=EXISTS, status=1, delete=True)
 
     def test_no_release_section_keeps_initial_report_informational(self):
         (self.clone / "CHANGELOG.md").write_text("# Changelog\n\n## [Unreleased]\n")
@@ -217,6 +230,60 @@ sys.exit(state.get("status", 0))
         self.publish(fetch=True)
         self.git(self.owner, "tag", "-f", VERSION, self.previous)
         self.assertEqual(self.assert_fails(), [])
+
+    def test_wrong_ancestor_tag_already_in_checkout_still_fails(self):
+        self.publish(commit=self.previous, fetch=True)
+        self.assertEqual(self.assert_fails(report=EXISTS, status=1), [])
+
+    def test_release_merge_rejects_tag_on_its_preparation_commit(self):
+        self.git(self.owner, "checkout", "-B", "main", self.previous)
+        self.git(self.owner, "merge", "--no-ff", "-m", "Merge release PR", self.head)
+        merge = self.git(self.owner, "rev-parse", "HEAD")
+        self.publish(commit=self.head, fetch=True)
+        self.git(self.clone, "checkout", "--detach", merge)
+        self.assertEqual(self.assert_fails(report=EXISTS, status=1), [])
+
+    def test_ordinary_development_cannot_reuse_an_unrelated_historical_tag(self):
+        self.publish(commit=self.previous, fetch=True)
+        (self.clone / "CHANGELOG.md").write_text((self.clone / "CHANGELOG.md").read_text() + "\n")
+        self.git(self.clone, "config", "user.name", "API Test")
+        self.git(self.clone, "config", "user.email", "api@example.invalid")
+        self.git(self.clone, "config", "commit.gpgsign", "false")
+        self.git(self.clone, "add", "CHANGELOG.md")
+        self.git(self.clone, "commit", "-m", "Continue after release preparation")
+        self.assertEqual(self.assert_fails(), [])
+
+    def test_published_release_rerun_ignores_later_releases_for_base(self):
+        self.publish(fetch=True)
+        (self.owner / "future.txt").write_text("A later release\n")
+        self.git(self.owner, "add", "future.txt")
+        self.git(self.owner, "commit", "-m", "Later release")
+        self.git(self.owner, "tag", "v0.1.2")
+        self.git(self.clone, "fetch", "--tags", "origin")
+        calls = self.assert_passes(report=EXISTS, status=1)
+        self.assertIn("-base=v0.1.0", calls[0])
+
+    def advance_checkout(self):
+        (self.clone / "development.txt").write_text("Development after release\n")
+        self.git(self.clone, "config", "user.name", "API Test")
+        self.git(self.clone, "config", "user.email", "api@example.invalid")
+        self.git(self.clone, "config", "commit.gpgsign", "false")
+        self.git(self.clone, "add", "development.txt")
+        self.git(self.clone, "commit", "-m", "Continue development")
+
+    def test_development_checkout_before_publication_reads_remote_release(self):
+        self.advance_checkout()
+        self.publish()
+        calls = self.assert_passes(report="# summary\nSuggested version: v0.1.2\n")
+        self.assertIn("-base=" + VERSION, calls[0])
+        self.assertFalse(any(arg.startswith("-version=") for arg in calls[0]))
+
+    def test_development_with_publication_during_check_remains_informational(self):
+        self.advance_checkout()
+        calls = self.assert_passes(report="# summary\nCannot suggest a release version.\n",
+                                  status=1, publish=self.head)
+        self.assertIn("-base=v0.1.0", calls[0])
+        self.assertFalse(any(arg.startswith("-version=") for arg in calls[0]))
 
 
 if __name__ == "__main__":

@@ -144,8 +144,8 @@ jobs:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
 
   # The exported API against the latest release (docs/releasing.md). gorelease lists
-  # incompatible and compatible changes and suggests the next version. On a release PR (the
-  # newest CHANGELOG version has no tag yet, or its tag identifies HEAD) the version must be
+  # incompatible and compatible changes and suggests the next version. On the commit
+  # introducing the newest CHANGELOG version (first-parent history), the version must be
   # one gorelease accepts: an incompatible change needs a new minor in v0, a new major path
   # from v1 on. Otherwise the report is informational.
   api:

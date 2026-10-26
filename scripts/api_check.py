@@ -24,6 +24,29 @@ def remote_commit(version: str) -> str:
     return refs.get(ref + "^{}", refs.get(ref, ""))
 
 
+def version_at(commit: str) -> str:
+    """The first parent can predate the initial CHANGELOG."""
+    if not git("ls-tree", "--name-only", commit, "--", "CHANGELOG.md"):
+        return ""
+    return changelog.latest(changelog.parse(git("show", f"{commit}:CHANGELOG.md")))
+
+
+def release_commit(version: str) -> str:
+    """Locate the release's introduction on main/PR first-parent history.
+
+    Local tag availability cannot distinguish a release from later development:
+    its owner may publish the tag after either checkout. A release merge is the
+    first-parent commit that introduces the version, not its preparation commit.
+    """
+    commits = git("rev-list", "--first-parent", "HEAD").splitlines()
+    release = commits[0]
+    for parent in commits[1:]:
+        if version_at(parent) != version:
+            break
+        release = parent
+    return release
+
+
 def verdict(report: str, version: str) -> str:
     """Recognise only the pinned tool's complete summary, never an error substring.
 
@@ -50,20 +73,23 @@ def verdict(report: str, version: str) -> str:
 def check() -> None:
     next_version = changelog.latest(changelog.parse(Path("CHANGELOG.md").read_text()))
     head = git("rev-parse", "HEAD")
+    release = release_commit(next_version) if next_version else head
     tags = git("tag", "--list", "v*", "--sort=-v:refname").splitlines()
     local = git("rev-parse", f"refs/tags/{next_version}^{{commit}}") if next_version in tags else ""
     before = remote_commit(next_version) if next_version else ""
-    # A known historical release remains the informational base for subsequent
-    # development. A missing local tag or a tag at HEAD means a release check.
-    candidate = bool(next_version) and (not local or local == head)
+    candidate = bool(next_version) and release == head
     if local and before != local:
         raise ValueError("Local and remote release tags disagree (or the remote tag is missing).")
-    if candidate and before and before != head:
+    if before and before != release:
         raise ValueError("The published release tag does not identify the checked release commit.")
-    if local and not candidate:
-        git("merge-base", "--is-ancestor", local, head)
     bases = [tag for tag in tags if not candidate or tag != next_version]
+    if candidate and before == head:
+        # A historical release rerun can see tags published after its checkout
+        # commit. Its compatibility base is still the preceding release.
+        bases = [tag for tag in bases if changelog.version_key(tag) < changelog.version_key(next_version)]
     base = bases[0] if bases else "none"
+    if not candidate and before:
+        base = next_version
     args = [f"-base={base}"]
     if candidate:
         args.append(f"-version={next_version}")
@@ -83,13 +109,13 @@ def check() -> None:
     after = remote_commit(next_version) if next_version else ""
     if before and after != before:
         raise ValueError("The remote release tag changed during the check.")
+    if after and after != release:
+        raise ValueError("The published release tag does not identify the checked release commit.")
     if candidate:
-        if after and after != head:
-            raise ValueError("The published release tag does not identify the checked release commit.")
         outcome = verdict(report, next_version)
         if result.returncode not in (0, 1) or outcome == "invalid":
             raise ValueError("gorelease did not accept the CHANGELOG version.")
-        if outcome == "exists" and after != head:
+        if outcome == "exists" and after != release:
             raise ValueError("An existing version is accepted only with its remote tag at the release commit.")
         if outcome == "exists":
             print(f"Verified published {next_version} at {head}; API compared against {base}.")

@@ -188,13 +188,14 @@ Also:
 
 ## Checks
 
-FIN-264: `scripts/api_check.py` checks exact remote tag identity before/after gorelease.
-A pending candidate or a tag at HEAD is validated against the previous tag, never itself.
-Only the pinned tool's exact already-exists summary plus a remote tag at the checked
-release commit permits the publication race. Unknown reports, foreign/moved tags and
-remote failures fail closed. Historical releases remain informational bases only when
-local/remote identities agree and the tag is an ancestor. See `docs/releasing.md` and
-`scripts/test_api_check.py`; preserve read-only credentials and the required api job.
+FIN-264: `scripts/api_check.py` identifies the release commit from the CHANGELOG
+version's introduction on first-parent history, independently of local tag availability.
+Only that release commit receives -version, with the preceding tag as base; later
+development stays informational even during publication. Exact remote tag identity is
+checked before/after gorelease. Only the pinned tool's exact already-exists summary at
+the expected release commit is accepted. Unknown candidate reports, foreign/moved tags
+and remote failures fail closed. See `docs/releasing.md` and `scripts/test_api_check.py`;
+preserve read-only credentials and the required api job.
 
 Run `make test` (or `make cover`), `make lint` and `make api` before pushing. The existing `go` CI job retains
 module tidiness, vet, script and changelog checks, then independently collects and checks all three suites.
