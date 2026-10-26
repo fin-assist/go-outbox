@@ -66,22 +66,32 @@ def release_commit(version: str) -> str:
     if legacy:
         git("merge-base", "--is-ancestor", legacy, "HEAD")
         return legacy
-    # The earliest introduction survives a later revert of an unpublished
-    # release. The nearest same-version segment would mistake that revert for
-    # a new candidate and reject the legitimate older published tag.
+    # Use the latest upward introduction. A revert to an older published
+    # version is not a new release, but reintroducing an unpublished version
+    # after that revert is. A downward typo correction with no older occurrence
+    # remains a candidate and is validated by gorelease against the latest tag.
     commits = git("rev-list", "--first-parent", "HEAD").splitlines()
-    for commit in reversed(commits):
-        if version_at(commit) == version:
-            return commit
+    current = version_at(commits[0])
+    fallback = None
+    for index, commit in enumerate(commits):
+        previous = version_at(commits[index + 1]) if index + 1 < len(commits) else ""
+        if current == version and previous != version:
+            if fallback is None:
+                fallback = commit
+            if not previous or changelog.version_key(previous) < changelog.version_key(version):
+                return commit
+        current = previous
+    if fallback:
+        return fallback
     raise ValueError(f"CHANGELOG version {version} is absent from checked first-parent history.")
 
 
 def matches_release(commit: str, release: str, head: str, version: str) -> bool:
-    """Candidates/pins need exact identity; development accepts the release series.
+    """Validate exact identity on the checked first-parent release history.
 
-    Release publication already permits a later main commit with the same
-    CHANGELOG version. Only subsequent development can use that historical tag;
-    it cannot validate a different candidate or a PR's preparation commit.
+    The canonical release commit and historical pins require exact identity.
+    A later checked commit may recognize its own same-version first-parent
+    series, but never a PR preparation commit from the second parent.
     """
     if commit == release:
         return True
@@ -122,21 +132,23 @@ def check() -> None:
     tags = git("tag", "--list", "v*", "--sort=-v:refname").splitlines()
     local = git("rev-parse", f"refs/tags/{next_version}^{{commit}}") if next_version in tags else ""
     before = remote_commit(next_version) if next_version else ""
-    candidate = bool(next_version) and release == head
+    # Preserve the original gate for every unpublished version, including
+    # development commits that might become the owner's eventual tag target.
+    validate_version = bool(next_version) and (not before or release == head)
     if local and before != local:
         raise ValueError("Local and remote release tags disagree (or the remote tag is missing).")
     if before and not matches_release(before, release, head, next_version):
         raise ValueError(f"Published {next_version} at {before} does not match release {release} (HEAD {head}).")
-    bases = [tag for tag in tags if not candidate or tag != next_version]
-    if candidate and before == head:
+    bases = [tag for tag in tags if not validate_version or tag != next_version]
+    if validate_version and before == head:
         # A historical release rerun can see tags published after its checkout
         # commit. Its compatibility base is still the preceding release.
         bases = [tag for tag in bases if changelog.version_key(tag) < changelog.version_key(next_version)]
     base = bases[0] if bases else "none"
-    if not candidate and before and (not bases or changelog.version_key(next_version) > changelog.version_key(base)):
+    if not validate_version and before and (not bases or changelog.version_key(next_version) > changelog.version_key(base)):
         base = next_version
     args = [f"-base={base}"]
-    if candidate:
+    if validate_version:
         args.append(f"-version={next_version}")
     # bash resolves an exported go function in the offline regression harness.
     # Arguments are positional, never interpolated into shell source.
@@ -156,14 +168,14 @@ def check() -> None:
         raise ValueError(f"Remote {next_version} changed from {before} to {after or 'missing'} (release {release}).")
     if after and not matches_release(after, release, head, next_version):
         raise ValueError(f"Published {next_version} at {after} does not match release {release} (HEAD {head}).")
-    if candidate:
+    if validate_version:
         outcome = verdict(report, next_version)
         if result.returncode not in (0, 1) or outcome == "invalid":
             raise ValueError("gorelease did not accept the CHANGELOG version.")
-        if outcome == "exists" and after != release:
+        if outcome == "exists" and not after:
             raise ValueError("An existing version is accepted only with its remote tag at the release commit.")
         if outcome == "exists":
-            print(f"Verified published {next_version} at {head}; API compared against {base}.")
+            print(f"Verified published {next_version} at {after}; checked HEAD {head} against {base}.")
 
 
 if __name__ == "__main__":

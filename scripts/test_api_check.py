@@ -317,12 +317,17 @@ sys.exit(state.get("status", 0))
         self.assertIn("-base=" + VERSION, calls[0])
         self.assertFalse(any(arg.startswith("-version=") for arg in calls[0]))
 
-    def test_development_with_publication_during_check_remains_informational(self):
+    def test_development_with_publication_during_check_validates_pending_version(self):
         self.advance_checkout()
-        calls = self.assert_passes(report="# summary\nCannot suggest a release version.\n",
+        calls = self.assert_passes(report=EXISTS,
                                   status=1, publish=self.head)
         self.assertIn("-base=v0.1.0", calls[0])
-        self.assertFalse(any(arg.startswith("-version=") for arg in calls[0]))
+        self.assertIn("-version=" + VERSION, calls[0])
+
+    def test_pending_development_cannot_hide_version_errors_during_publication(self):
+        self.advance_checkout()
+        self.assert_fails(report=EXISTS.replace("already exists", "has incompatible changes"),
+                          status=1, publish=self.head)
 
     def test_legacy_releases_pin_exact_module_version_and_ancestor_sha(self):
         releases = {
@@ -364,9 +369,56 @@ sys.exit(state.get("status", 0))
         self.advance_checkout()
         later = self.git(self.clone, "rev-parse", "HEAD")
         self.git(self.owner, "fetch", str(self.clone), later)
-        calls = self.assert_passes(report="# summary\nCannot suggest a release version.\n",
+        calls = self.assert_passes(report=EXISTS,
                                   status=1, publish=later)
-        self.assertFalse(any(arg.startswith("-version=") for arg in calls[0]))
+        self.assertIn("-version=" + VERSION, calls[0])
+
+    def reintroduce_release(self, merge=False):
+        old_release = self.head
+        release_text = (self.owner / "CHANGELOG.md").read_text()
+        (self.owner / "CHANGELOG.md").write_text(self.git(self.owner, "show", self.previous + ":CHANGELOG.md") + "\n")
+        self.git(self.owner, "add", "CHANGELOG.md")
+        self.git(self.owner, "commit", "-m", "Revert unpublished release")
+        if merge:
+            self.git(self.owner, "checkout", "-b", "retry-release")
+        (self.owner / "CHANGELOG.md").write_text(release_text)
+        self.git(self.owner, "add", "CHANGELOG.md")
+        self.git(self.owner, "commit", "-m", "Reintroduce corrected release")
+        if merge:
+            self.git(self.owner, "checkout", "main")
+            self.git(self.owner, "merge", "--no-ff", "-m", "Synthetic retry release PR merge", "retry-release")
+        self.head = self.git(self.owner, "rev-parse", "HEAD")
+        self.git(self.clone, "fetch", "origin")
+        self.git(self.clone, "checkout", "--detach", self.head)
+        return old_release
+
+    def test_reintroduced_release_keeps_version_gate_and_accepts_its_publication(self):
+        self.reintroduce_release()
+        calls = self.assert_fails(report=EXISTS.replace("already exists", "has incompatible changes"), status=1)
+        self.assertIn("-version=" + VERSION, calls[0])
+        self.assertIn("-base=v0.1.0", calls[0])
+        self.assert_passes(report=EXISTS, status=1, publish=self.head)
+
+    def test_reintroduced_release_pr_merge_keeps_version_gate(self):
+        self.reintroduce_release(merge=True)
+        calls = self.assert_fails(report=EXISTS.replace("already exists", "has incompatible changes"), status=1)
+        self.assertIn("-version=" + VERSION, calls[0])
+        self.assertIn("-base=v0.1.0", calls[0])
+
+    def test_reintroduced_release_rejects_publication_of_reverted_attempt(self):
+        old = self.reintroduce_release()
+        self.assert_fails(report=EXISTS, status=1, publish=old)
+
+    def test_downward_version_typo_correction_remains_a_candidate(self):
+        text = (self.owner / "CHANGELOG.md").read_text()
+        for version in ("v0.3.0", "v0.2.0"):
+            (self.owner / "CHANGELOG.md").write_text(text.replace(VERSION, version))
+            self.git(self.owner, "add", "CHANGELOG.md")
+            self.git(self.owner, "commit", "-m", "Correct unpublished version " + version)
+        self.git(self.clone, "fetch", "origin")
+        self.git(self.clone, "checkout", "--detach", self.git(self.owner, "rev-parse", "HEAD"))
+        calls = self.assert_passes(report=VALID.replace(VERSION, "v0.2.0"))
+        self.assertIn("-version=v0.2.0", calls[0])
 
     def test_legacy_pin_cannot_be_replaced_by_a_later_version_series_commit(self):
         for sha in api_check.LEGACY_RELEASES.values():

@@ -188,16 +188,18 @@ Also:
 
 ## Checks
 
-FIN-264: `scripts/api_check.py` finds the first introduction of a CHANGELOG version
-on first-parent history, including after a reverted unpublished release. Only the
-release candidate gets -version against the preceding tag. Later development uses
-the newest tag and may accept a later same-version first-parent release commit;
-candidates and historical pins require exact identity. Remote tag identity is checked
-before/after gorelease; only the pinned tool's full already-exists summary can excuse
-publication of that exact candidate. Unknown candidate reports, foreign/moved/deleted
-tags and remote failures fail closed. Audited legacy tags pin exact module/version/SHA;
-no later commit or new version inherits that exception. See `docs/releasing.md` and
-`scripts/test_api_check.py`; preserve read-only credentials and the required api job.
+FIN-264: `scripts/api_check.py` finds the latest upward introduction of a CHANGELOG
+version on first-parent history. Reverting an unpublished release keeps the old
+published version historical; reintroducing the unpublished number checks a new
+candidate. Every still-unpublished version gets -version, including later commits;
+published release commits are rechecked too. Already-published development uses
+the newest tag and may accept a later same-version first-parent release commit.
+Remote tag identity is checked before/after gorelease. Only its full pinned
+already-exists summary can excuse concurrent publication; other invalid verdicts
+remain failures. Candidates and audited legacy pins require verified identity;
+foreign/moved/deleted tags and remote failures fail closed. Pins bind exact
+module/version/SHA only. See `docs/releasing.md` and `scripts/test_api_check.py`;
+preserve read-only credentials and the required api job.
 
 Run `make test` (or `make cover`), `make lint` and `make api` before pushing. The existing `go` CI job retains
 module tidiness, vet, script and changelog checks, then independently collects and checks all three suites.

@@ -143,11 +143,9 @@ jobs:
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
 
-  # The exported API against the latest release (docs/releasing.md). gorelease lists
-  # incompatible and compatible changes and suggests the next version. On the commit
-  # introducing the newest CHANGELOG version (first-parent history), the version must be
-  # one gorelease accepts: an incompatible change needs a new minor in v0, a new major path
-  # from v1 on. Otherwise the report is informational.
+  # Compare APIs and validate every unpublished CHANGELOG version. Published
+  # release commits are rechecked against the previous version; development of
+  # an already published version retains its informational report.
   api:
     runs-on: ubuntu-latest
     steps:
