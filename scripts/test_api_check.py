@@ -6,7 +6,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
+import api_check
 import yaml
 
 
@@ -15,6 +17,17 @@ VERSION = "v0.1.1"
 EXISTS = (f"# summary\n{VERSION} is not a valid semantic version for this release.\n"
           f"version {VERSION} already exists\n\nexit status 1\n")
 VALID = f"# summary\n{VERSION} is a valid semantic version for this release.\n"
+# Captured with the pinned gorelease and a file:// Go proxy containing both
+# v1.0.0 and v1.0.1: the published PATCH also removes Greeting from the public API.
+EXISTS_INCOMPATIBLE_V1 = """# example.com/library
+## incompatible changes
+Greeting: removed
+
+# summary
+v1.0.1 is not a valid semantic version for this release.
+There are incompatible changes.
+
+"""
 
 
 class APICheckTests(unittest.TestCase):
@@ -121,11 +134,12 @@ sys.exit(state.get("status", 0))
         self.assertIn("-version=" + VERSION, calls[0])
 
     def test_publication_during_gorelease_is_accepted_only_for_same_commit(self):
-        for annotated in (False, True):
-            with self.subTest(annotated=annotated):
-                if annotated:
-                    self.git(self.owner, "tag", "-d", VERSION)
-                self.assert_passes(report=EXISTS, status=1, publish=self.head, annotated=annotated)
+        for report, status in ((VALID, 0), (EXISTS, 1)):
+            for annotated in (False, True):
+                with self.subTest(annotated=annotated, status=status):
+                    if self.git(self.owner, "tag", "--list", VERSION):
+                        self.git(self.owner, "tag", "-d", VERSION)
+                    self.assert_passes(report=report, status=status, publish=self.head, annotated=annotated)
 
     def test_publication_between_checkout_and_check_is_accepted(self):
         self.publish(annotated=True)
@@ -165,6 +179,31 @@ sys.exit(state.get("status", 0))
                        VALID + "unexpected error\n"):
             with self.subTest(report=report):
                 self.assert_fails(report=report, status=1)
+
+    def test_published_incompatible_v1_patch_is_still_rejected(self):
+        text = (self.owner / "CHANGELOG.md").read_text().replace(VERSION, "v1.0.1")
+        (self.owner / "CHANGELOG.md").write_text(text)
+        self.git(self.owner, "add", "CHANGELOG.md")
+        self.git(self.owner, "commit", "-m", "Prepare v1 patch")
+        head = self.git(self.owner, "rev-parse", "HEAD")
+        self.git(self.owner, "tag", "v1.0.0", self.previous)
+        self.git(self.owner, "tag", "-a", "-m", "Published v1 patch", "v1.0.1", head)
+        self.git(self.clone, "fetch", "--tags", "origin")
+        self.git(self.clone, "checkout", "--detach", head)
+        calls = self.assert_fails(report=EXISTS_INCOMPATIBLE_V1, status=1)
+        self.assertIn("-base=v1.0.0", calls[0])
+        self.assertIn("-version=v1.0.1", calls[0])
+
+    def test_release_parent_can_predate_changelog(self):
+        self.git(self.owner, "rm", "CHANGELOG.md")
+        self.git(self.owner, "commit", "-m", "Parent without changelog")
+        (self.owner / "CHANGELOG.md").write_text((self.clone / "CHANGELOG.md").read_text())
+        self.git(self.owner, "add", "CHANGELOG.md")
+        self.git(self.owner, "commit", "-m", "Introduce changelog release")
+        self.git(self.clone, "fetch", "origin")
+        self.git(self.clone, "checkout", "--detach", self.git(self.owner, "rev-parse", "HEAD"))
+        calls = self.assert_passes()
+        self.assertIn("-version=" + VERSION, calls[0])
 
     def test_valid_version_with_dependency_diagnostic_keeps_existing_policy(self):
         self.assert_passes(report="# diagnostics\nretracted dependency\n\n" + VALID + "exit status 1\n",
@@ -284,6 +323,30 @@ sys.exit(state.get("status", 0))
                                   status=1, publish=self.head)
         self.assertIn("-base=v0.1.0", calls[0])
         self.assertFalse(any(arg.startswith("-version=") for arg in calls[0]))
+
+    def test_legacy_releases_pin_exact_module_version_and_ancestor_sha(self):
+        releases = {
+            "go-identity": "f44f31941c19197cf92c007d4fe087b1d76557b0",
+            "go-outbox": "d5043a4e5791338eb1d3c3ae0ba07d4bfb95a402",
+            "go-tombstone": "0d6edd6ca9419c99bcb490cdb732c962ba6887d6",
+        }
+        for name, sha in releases.items():
+            with self.subTest(module=name), mock.patch.object(api_check, "Path") as path, \
+                    mock.patch.object(api_check, "git") as git:
+                path.return_value.read_text.return_value = f"module github.com/fin-assist/{name}\n"
+                self.assertEqual(api_check.release_commit("v0.1.0"), sha)
+                git.assert_called_once_with("merge-base", "--is-ancestor", sha, "HEAD")
+
+    def test_legacy_module_name_does_not_accept_a_different_history(self):
+        (self.clone / "go.mod").write_text("module github.com/fin-assist/go-identity\n")
+        (self.clone / "CHANGELOG.md").write_text("# Changelog\n\n## [Unreleased]\n\n"
+                                                "## [v0.1.0] — 2026-10-24\n\n- First.\n")
+        self.assertEqual(self.assert_fails(), [])
+
+    def test_legacy_exception_does_not_cover_new_versions(self):
+        (self.clone / "go.mod").write_text("module github.com/fin-assist/go-identity\n")
+        calls = self.assert_passes()
+        self.assertIn("-version=" + VERSION, calls[0])
 
 
 if __name__ == "__main__":

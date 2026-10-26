@@ -11,6 +11,15 @@ import sys
 import changelog
 
 
+# These three immutable v0.1.0 tags predate their CHANGELOG sections (FIN-312).
+# Scope by exact module/version/SHA, never by a missing section or tag ancestry alone.
+LEGACY_RELEASES = {
+    ("github.com/fin-assist/go-identity", "v0.1.0"): "f44f31941c19197cf92c007d4fe087b1d76557b0",
+    ("github.com/fin-assist/go-outbox", "v0.1.0"): "d5043a4e5791338eb1d3c3ae0ba07d4bfb95a402",
+    ("github.com/fin-assist/go-tombstone", "v0.1.0"): "0d6edd6ca9419c99bcb490cdb732c962ba6887d6",
+}
+
+
 def git(*args: str) -> str:
     return subprocess.run(["git", *args], check=True, capture_output=True,
                           text=True, timeout=60).stdout.strip()
@@ -38,6 +47,12 @@ def release_commit(version: str) -> str:
     its owner may publish the tag after either checkout. A release merge is the
     first-parent commit that introduces the version, not its preparation commit.
     """
+    module_file = Path("go.mod")
+    module = re.search(r"(?m)^module\s+(\S+)\s*$", module_file.read_text()) if module_file.exists() else None
+    legacy = LEGACY_RELEASES.get((module[1], version)) if module else None
+    if legacy:
+        git("merge-base", "--is-ancestor", legacy, "HEAD")
+        return legacy
     commits = git("rev-list", "--first-parent", "HEAD").splitlines()
     release = commits[0]
     for parent in commits[1:]:
