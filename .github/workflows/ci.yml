@@ -143,11 +143,9 @@ jobs:
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
 
-  # The exported API against the latest release (docs/releasing.md). gorelease lists
-  # incompatible and compatible changes and suggests the next version. On a release PR (the
-  # newest section of CHANGELOG.md names a version that has no tag yet) the version must be
-  # one gorelease accepts: an incompatible change needs a new minor in v0, a new major path
-  # from v1 on. Otherwise the report is informational.
+  # Compare APIs and validate every unpublished CHANGELOG version. Published
+  # release commits are rechecked against the previous version; development of
+  # an already published version retains its informational report.
   api:
     runs-on: ubuntu-latest
     steps:
@@ -166,32 +164,7 @@ jobs:
             git config --global url."https://x-access-token:${TOKEN}@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"
           fi
       - name: API changes
-        run: |
-          base=$(git tag --list 'v*' --sort=-v:refname | head -n1)
-          next=$(python3 scripts/changelog.py latest)
-          args=(-base="${base:-none}")
-          if [ -n "$next" ] && ! git rev-parse -q --verify "refs/tags/$next" > /dev/null; then
-            args+=(-version="$next")
-          fi
-          set +e
-          go run "$GORELEASE" "${args[@]}" > gorelease.txt 2>&1
-          set -e
-          {
-            echo "### API против ${base:-первой версии}"
-            echo
-            echo '```'
-            cat gorelease.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          cat gorelease.txt
-          # gorelease also exits 1 on diagnostics of dependencies (a retracted indirect
-          # module), so the verdict is read from its summary, not from the exit code.
-          if [ -n "$next" ] && ! git rev-parse -q --verify "refs/tags/$next" > /dev/null; then
-            if ! grep -q "^$next is a valid semantic version for this release" gorelease.txt; then
-              echo "CHANGELOG.md names $next, which gorelease does not accept (docs/releasing.md)."
-              exit 1
-            fi
-          fi
+        run: python3 scripts/api_check.py
 
   migrations:
     if: github.event_name == 'pull_request'
