@@ -127,6 +127,8 @@ def check() -> None:
     local = git("rev-parse", f"refs/tags/{next_version}^{{commit}}") if next_version in tags else ""
     before = remote_commit(next_version) if next_version else ""
     release = release_commit(next_version, before) if next_version else head
+    if release in LEGACY_RELEASES.values() and not before:
+        raise ValueError(f"Published legacy tag {next_version} is missing from origin; expected {release}.")
     # Preserve the original gate for every unpublished version, including
     # development commits that might become the owner's eventual tag target.
     validate_version = bool(next_version) and (not before or before == head or release == head)

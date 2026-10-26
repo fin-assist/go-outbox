@@ -197,7 +197,8 @@ Every unpublished version and every checked HEAD tagged with that version gets
 Before/after tag SHA must agree. Publication during a check cannot substitute an
 abandoned attempt or suppress an invalid verdict other than the pinned full
 already-exists summary. Preparation branches, foreign/moved/deleted tags and remote
-failures fail closed. Audited legacy pins bind exact module/version/SHA only.
+failures fail closed. Audited legacy pins bind exact module/version/SHA only; their remote tag must
+exist even if absent locally, never treated as an unpublished candidate.
 See `docs/releasing.md` and `scripts/test_api_check.py`; keep required api and read-only rights.
 
 Run `make test` (or `make cover`), `make lint` and `make api` before pushing. The existing `go` CI job retains

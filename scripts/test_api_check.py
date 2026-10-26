@@ -531,6 +531,13 @@ sys.exit(state.get("status", 0))
         (self.clone / "go.mod").write_text("module github.com/fin-assist/go-identity\n")
         self.assertEqual(self.assert_fails(), [])
 
+    def test_legacy_workflow_rejects_remote_deletion_before_checkout(self):
+        self.make_legacy_history()
+        self.git(self.owner, "tag", "-d", "v0.1.0")
+        self.git(self.clone, "tag", "-d", "v0.1.0")
+        calls = self.assert_fails(report=VALID.replace(VERSION, "v0.1.0"), reason="missing from origin")
+        self.assertEqual(calls, [])
+
     def make_release_merge(self):
         self.git(self.owner, "checkout", "-B", "main", self.previous)
         self.git(self.owner, "merge", "--no-ff", "-m", "Merge release PR", self.head)
