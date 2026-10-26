@@ -116,9 +116,13 @@ sys.exit(state.get("status", 0))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return calls
 
-    def assert_fails(self, **kwargs):
+    def assert_fails(self, reason=None, **kwargs):
         result, calls = self.run_check(**kwargs)
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("API check failed:", result.stderr)
+        self.assertNotIn("Traceback", result.stdout + result.stderr)
+        if reason:
+            self.assertIn(reason, result.stderr)
         return calls
 
     def test_captured_reports_require_the_recorded_tool_pin(self):
@@ -327,7 +331,7 @@ sys.exit(state.get("status", 0))
     def test_pending_development_cannot_hide_version_errors_during_publication(self):
         self.advance_checkout()
         self.assert_fails(report=EXISTS.replace("already exists", "has incompatible changes"),
-                          status=1, publish=self.head)
+                          status=1, publish=self.head, reason="did not accept")
 
     def test_legacy_releases_pin_exact_module_version_and_ancestor_sha(self):
         releases = {
@@ -353,14 +357,14 @@ sys.exit(state.get("status", 0))
         calls = self.assert_passes()
         self.assertIn("-version=" + VERSION, calls[0])
 
-    def test_later_main_tag_is_informational_but_cannot_validate_original_candidate(self):
+    def test_later_main_tag_is_checked_and_cannot_validate_original_candidate(self):
         self.advance_checkout()
         later = self.git(self.clone, "rev-parse", "HEAD")
         self.git(self.owner, "fetch", str(self.clone), later)
         self.publish(commit=later, fetch=True)
-        calls = self.assert_passes(report="# summary\nSuggested version: v0.1.2\n")
-        self.assertIn("-base=" + VERSION, calls[0])
-        self.assertFalse(any(arg.startswith("-version=") for arg in calls[0]))
+        calls = self.assert_passes(report=EXISTS, status=1)
+        self.assertIn("-base=v0.1.0", calls[0])
+        self.assertIn("-version=" + VERSION, calls[0])
         # The exact release-candidate checkout must still reject this other commit.
         self.git(self.clone, "checkout", "--detach", self.head)
         self.assertEqual(self.assert_fails(report=EXISTS, status=1), calls)
@@ -371,6 +375,14 @@ sys.exit(state.get("status", 0))
         self.git(self.owner, "fetch", str(self.clone), later)
         calls = self.assert_passes(report=EXISTS,
                                   status=1, publish=later)
+        self.assertIn("-version=" + VERSION, calls[0])
+
+    def test_published_late_head_does_not_hide_version_errors(self):
+        self.advance_checkout()
+        later = self.git(self.clone, "rev-parse", "HEAD")
+        self.git(self.owner, "fetch", str(self.clone), later)
+        self.publish(commit=later, fetch=True)
+        calls = self.assert_fails(report=EXISTS.replace("already exists", "has incompatible changes"), status=1)
         self.assertIn("-version=" + VERSION, calls[0])
 
     def reintroduce_release(self, merge=False):
@@ -407,7 +419,42 @@ sys.exit(state.get("status", 0))
 
     def test_reintroduced_release_rejects_publication_of_reverted_attempt(self):
         old = self.reintroduce_release()
-        self.assert_fails(report=EXISTS, status=1, publish=old)
+        self.assert_fails(report=EXISTS, status=1, publish=old, reason="does not match release")
+
+    def test_restoring_published_release_section_keeps_immutable_baseline(self):
+        self.publish(fetch=True)
+        self.reintroduce_release()
+        calls = self.assert_passes(report="# summary\nSuggested version: v0.1.2\n")
+        self.assertIn("-base=" + VERSION, calls[-1])
+        self.assertFalse(any(arg.startswith("-version=") for arg in calls[-1]))
+        self.advance_checkout()
+        calls = self.assert_passes(report="# summary\nSuggested version: v0.1.2\n")
+        self.assertFalse(any(arg.startswith("-version=") for arg in calls[-1]))
+
+    def test_unpublished_typo_retry_rejects_tag_on_abandoned_attempt(self):
+        old = self.reintroduce_release()
+        text = (self.owner / "CHANGELOG.md").read_text()
+        for version in ("v0.3.0", VERSION):
+            (self.owner / "CHANGELOG.md").write_text(text.replace(VERSION, version))
+            self.git(self.owner, "add", "CHANGELOG.md")
+            self.git(self.owner, "commit", "-m", "Correct retry version " + version)
+        self.git(self.clone, "fetch", "origin")
+        self.git(self.clone, "checkout", "--detach", self.git(self.owner, "rev-parse", "HEAD"))
+        self.assert_fails(report=EXISTS, status=1, publish=old, reason="does not match release")
+
+    def test_reverting_unpublished_release_after_published_downward_correction(self):
+        text = (self.owner / "CHANGELOG.md").read_text()
+        for version in ("v0.3.0", "v0.2.0", "v0.2.1", "v0.2.0"):
+            (self.owner / "CHANGELOG.md").write_text(text.replace(VERSION, version))
+            self.git(self.owner, "add", "CHANGELOG.md")
+            self.git(self.owner, "commit", "-m", "Version state " + version)
+            if version == "v0.2.0" and not self.git(self.owner, "tag", "--list", version):
+                self.git(self.owner, "tag", version)
+        self.git(self.clone, "fetch", "--tags", "origin")
+        self.git(self.clone, "checkout", "--detach", self.git(self.owner, "rev-parse", "HEAD"))
+        calls = self.assert_passes(report="# summary\nSuggested version: v0.2.1\n")
+        self.assertIn("-base=v0.2.0", calls[0])
+        self.assertFalse(any(arg.startswith("-version=") for arg in calls[0]))
 
     def test_downward_version_typo_correction_remains_a_candidate(self):
         text = (self.owner / "CHANGELOG.md").read_text()

@@ -53,7 +53,7 @@ def version_at(commit: str) -> str:
     return changelog.latest(changelog.parse(git("show", f"{commit}:CHANGELOG.md")))
 
 
-def release_commit(version: str) -> str:
+def release_commit(version: str, published: str = "") -> str:
     """Locate the release's introduction on main/PR first-parent history.
 
     Local tag availability cannot distinguish a release from later development:
@@ -66,24 +66,19 @@ def release_commit(version: str) -> str:
     if legacy:
         git("merge-base", "--is-ancestor", legacy, "HEAD")
         return legacy
-    # Use the latest upward introduction. A revert to an older published
-    # version is not a new release, but reintroducing an unpublished version
-    # after that revert is. A downward typo correction with no older occurrence
-    # remains a candidate and is validated by gorelease against the latest tag.
+    # A published immutable tag selects its historical same-version segment.
+    # Without publication, only the current segment may become the release:
+    # an abandoned earlier attempt must not validate a retry (even after typos).
     commits = git("rev-list", "--first-parent", "HEAD").splitlines()
-    current = version_at(commits[0])
-    fallback = None
-    for index, commit in enumerate(commits):
-        previous = version_at(commits[index + 1]) if index + 1 < len(commits) else ""
-        if current == version and previous != version:
-            if fallback is None:
-                fallback = commit
-            if not previous or changelog.version_key(previous) < changelog.version_key(version):
-                return commit
-        current = previous
-    if fallback:
-        return fallback
-    raise ValueError(f"CHANGELOG version {version} is absent from checked first-parent history.")
+    start = commits.index(published) if published in commits and version_at(published) == version else 0
+    if version_at(commits[start]) != version:
+        raise ValueError(f"CHANGELOG version {version} is absent from checked first-parent history.")
+    release = commits[start]
+    for parent in commits[start + 1:]:
+        if version_at(parent) != version:
+            break
+        release = parent
+    return release
 
 
 def matches_release(commit: str, release: str, head: str, version: str) -> bool:
@@ -128,13 +123,13 @@ def verdict(report: str, version: str) -> str:
 def check() -> None:
     next_version = changelog.latest(changelog.parse(Path("CHANGELOG.md").read_text()))
     head = git("rev-parse", "HEAD")
-    release = release_commit(next_version) if next_version else head
     tags = git("tag", "--list", "v*", "--sort=-v:refname").splitlines()
     local = git("rev-parse", f"refs/tags/{next_version}^{{commit}}") if next_version in tags else ""
     before = remote_commit(next_version) if next_version else ""
+    release = release_commit(next_version, before) if next_version else head
     # Preserve the original gate for every unpublished version, including
     # development commits that might become the owner's eventual tag target.
-    validate_version = bool(next_version) and (not before or release == head)
+    validate_version = bool(next_version) and (not before or before == head or release == head)
     if local and before != local:
         raise ValueError("Local and remote release tags disagree (or the remote tag is missing).")
     if before and not matches_release(before, release, head, next_version):
