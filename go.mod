@@ -6,7 +6,7 @@ require (
 	github.com/fin-assist/contracts/gen/go v0.5.0
 	github.com/fin-assist/go-identity v0.2.1
 	github.com/fin-assist/go-migrate v0.2.1
-	github.com/fin-assist/go-postgres v0.3.0
+	github.com/fin-assist/go-postgres v0.3.1
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0

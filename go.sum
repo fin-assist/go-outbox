@@ -57,8 +57,8 @@ github.com/fin-assist/go-identity v0.2.1 h1:s4iczoo8Xnyel9R/hQUHot6cgcpTXhxxuY6u
 github.com/fin-assist/go-identity v0.2.1/go.mod h1:z5FxiHHs0DNAzQCTb9OrDAb1lk60r9lOz9CVUgDPWlI=
 github.com/fin-assist/go-migrate v0.2.1 h1:CKGbx1ogExInZT477XA+zBADX/FvCthT7fbES4N5UCY=
 github.com/fin-assist/go-migrate v0.2.1/go.mod h1:HrFhmWrq0nOj7Aqtds+MuqMRNavS1SzKXcdSEMnPFW4=
-github.com/fin-assist/go-postgres v0.3.0 h1:m/GfmwbFekkXwtwveDU5WWDCU7gY87gkVLWqiKgrAVE=
-github.com/fin-assist/go-postgres v0.3.0/go.mod h1:gzH2EJ9uoMYeeAD+cBjNV0AL9kziOrzMszQjY7CuPIc=
+github.com/fin-assist/go-postgres v0.3.1 h1:ThDWfXG7EWl5m2ps30h4oaqUj4wB0vTT2I9hVRo0XoQ=
+github.com/fin-assist/go-postgres v0.3.1/go.mod h1:AWa/05+7vRUt+nyRJKKpVBhbca15NNVbHkyvVj6s4nQ=
 github.com/go-logr/logr v1.2.2/go.mod h1:jdQByPbusPIv2/zmleS9BjJVeZ6kBagPoEUsqbVz/1A=
 github.com/go-logr/logr v1.4.3 h1:CjnDlHq8ikf6E492q6eKboGOC0T8CDaOvkHCIg8idEI=
 github.com/go-logr/logr v1.4.3/go.mod h1:9T104GzyrTigFIr8wt5mBrctHMim0Nb2HLGrmQ40KvY=
