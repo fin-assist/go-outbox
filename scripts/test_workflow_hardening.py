@@ -81,10 +81,14 @@ class WorkflowHardeningTests(unittest.TestCase):
                 self.assertEqual(violations(path.read_text(), path.name in CREDENTIALED), [])
 
     def test_checkouts_are_seen(self):
-        # A walker that finds no steps would pass every workflow.
-        text = (WORKFLOWS / "ci.yml").read_text()
-        checkouts = [s for s in steps(yaml.safe_load(text)) if is_checkout(s)]
-        self.assertEqual(len(checkouts), text.count("actions/checkout@"))
+        # Thin CI has no local checkout; inspect the remaining local workflows too.
+        total = 0
+        for path in workflow_files():
+            text = path.read_text()
+            checkouts = [s for s in steps(yaml.safe_load(text)) if is_checkout(s)]
+            self.assertEqual(len(checkouts), text.count("actions/checkout@"), path.name)
+            total += len(checkouts)
+        self.assertGreater(total, 0, "The walker must observe real checkout steps")
 
 
 def job(*step_texts):

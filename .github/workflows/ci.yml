@@ -8,195 +8,74 @@ on:
 permissions:
   contents: read
 
-# fin-assist modules are fetched from git, not the public proxy. A private one needs the
-# secret GO_MODULES_TOKEN (read access to fin-assist repositories); public ones work without it.
-env:
-  GOPRIVATE: github.com/fin-assist/*
-  GOLANGCI_LINT_VERSION: v2.15.0 # same as Makefile
-  GORELEASE: golang.org/x/exp/cmd/gorelease@v0.0.0-20261014143641-f0251eb4aa3e # same as Makefile
-
+# FIN-372: a single immutable source supplies both CI and local lint.
+# Tiny gates preserve the existing required check names.
 jobs:
+  go-check:
+    uses: fin-assist/go-ci/.github/workflows/shared-go.yml@ecca25f4c7a74f6d2fa6040aa79d39ccda272e96 # main
+    with:
+      revision: 'ecca25f4c7a74f6d2fa6040aa79d39ccda272e96'
+      profile: library
+    secrets:
+      GO_MODULES_TOKEN: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
+
   go:
+    needs: go-check
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 2
+    env:
+      RESULT: ${{ needs.go-check.result }}
     steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-      - name: Access to private modules
-        env:
-          TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
-        run: |
-          if [ -n "$TOKEN" ]; then
-            git config --global url."https://x-access-token:${TOKEN}@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"
-          fi
-      - name: go.mod is tidy
-        run: go mod tidy -diff
-      - name: Vet
-        run: go vet ./...
-      - name: Test names cover all selectors
-        run: make test-names
-      # scripts/test_workflow_hardening.py parses workflows with PyYAML (preinstalled on ubuntu runners).
-      - name: Script dependencies
-        run: python3 -c 'import yaml' || { echo 'PyYAML is required for the script tests (python3-yaml).' >&2; exit 1; }
-      - name: Test the scripts
-        run: python3 -m unittest discover -s scripts -p 'test_*.py'
-      - name: CHANGELOG.md format
-        run: python3 scripts/changelog.py check
-      - name: Collect unit statements coverage
-        id: collect_unit
-        continue-on-error: true
-        run: make collect-unit
-      - name: Require 80 percent unit statements coverage
-        id: check_unit
-        if: always() && steps.collect_unit.outcome == 'success'
-        continue-on-error: true
-        run: make check-unit
-      - name: Collect integration statements coverage
-        id: collect_integration
-        continue-on-error: true
-        run: make collect-integration
-      - name: Require 80 percent integration statements coverage
-        id: check_integration
-        if: always() && steps.collect_integration.outcome == 'success'
-        continue-on-error: true
-        run: make check-integration
-      - name: Collect api statements coverage
-        id: collect_api
-        continue-on-error: true
-        run: make collect-api
-      - name: Require 80 percent api statements coverage
-        id: check_api
-        if: always() && steps.collect_api.outcome == 'success'
-        continue-on-error: true
-        run: make check-api
-      - name: Combined statements coverage (informational union)
-        if: always() && steps.collect_unit.outcome == 'success' && steps.collect_integration.outcome == 'success' && steps.collect_api.outcome == 'success'
-        run: make cover-combined
-      - name: Coverage summary
-        if: always()
-        run: |
-          for level in unit integration api combined; do
-            echo "## $level coverage (Go statements)" >> "$GITHUB_STEP_SUMMARY"
-            if [ -s "$level.report.txt" ]; then
-              echo '```text' >> "$GITHUB_STEP_SUMMARY"
-              cat "$level.report.txt" >> "$GITHUB_STEP_SUMMARY"
-              echo '```' >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo 'Coverage unavailable: suite collection or input validation failed.' >> "$GITHUB_STEP_SUMMARY"
-            fi
-          done
-          echo 'Each suite requires total80 independently, with go-test-coverage v2.20.1 rounding. Combined is informational.' >> "$GITHUB_STEP_SUMMARY"
-          echo "[Coverage artifacts]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID#artifacts)" >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: coverage
-          path: |
-            unit.out
-            integration.out
-            api.out
-            *.jsonl
-            *.coverage.txt
-            *.report.txt
-          if-no-files-found: error
-      # Keep the existing required status check: low coverage cannot hide behind a green go job.
-      - name: Require all three suites and thresholds
-        if: always()
-        env:
-          COLLECT_UNIT: ${{ steps.collect_unit.outcome }}
-          CHECK_UNIT: ${{ steps.check_unit.outcome }}
-          COLLECT_INTEGRATION: ${{ steps.collect_integration.outcome }}
-          CHECK_INTEGRATION: ${{ steps.check_integration.outcome }}
-          COLLECT_API: ${{ steps.collect_api.outcome }}
-          CHECK_API: ${{ steps.check_api.outcome }}
-        run: |
-          for outcome in "$COLLECT_UNIT" "$CHECK_UNIT" "$COLLECT_INTEGRATION" "$CHECK_INTEGRATION" "$COLLECT_API" "$CHECK_API"; do
-            if [ "$outcome" != success ]; then
-              echo 'Every suite must execute without skips and independently meet total80.' >&2
-              exit 1
-            fi
-          done
+      - name: Require successful shared checks
+        run: test "$RESULT" = success
+  lint-check:
+    uses: fin-assist/go-ci/.github/workflows/shared-lint.yml@ecca25f4c7a74f6d2fa6040aa79d39ccda272e96 # main
+    with:
+      revision: 'ecca25f4c7a74f6d2fa6040aa79d39ccda272e96'
+    secrets:
+      GO_MODULES_TOKEN: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
 
   lint:
+    needs: lint-check
+    if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      RESULT: ${{ needs.lint-check.result }}
     steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-      - name: Access to private modules
-        env:
-          TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
-        run: |
-          if [ -n "$TOKEN" ]; then
-            git config --global url."https://x-access-token:${TOKEN}@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"
-          fi
-      # forbidigo: errors only through finerr, no process-wide logger, metrics registry or
-      # environment; depguard: no frameworks (.golangci.yml).
-      - uses: golangci/golangci-lint-action@v9
-        with:
-          version: ${{ env.GOLANGCI_LINT_VERSION }}
+      - name: Require successful shared checks
+        run: test "$RESULT" = success
+  api-check:
+    uses: fin-assist/go-ci/.github/workflows/shared-api.yml@ecca25f4c7a74f6d2fa6040aa79d39ccda272e96 # main
+    with:
+      revision: 'ecca25f4c7a74f6d2fa6040aa79d39ccda272e96'
+    secrets:
+      GO_MODULES_TOKEN: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
 
-  # Compare APIs and validate every unpublished CHANGELOG version. Published
-  # release commits are rechecked against the previous version; development of
-  # an already published version retains its informational report.
   api:
+    needs: api-check
+    if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      RESULT: ${{ needs.api-check.result }}
     steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0 # tags
-          persist-credentials: false
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-      - name: Access to private modules
-        env:
-          TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
-        run: |
-          if [ -n "$TOKEN" ]; then
-            git config --global url."https://x-access-token:${TOKEN}@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"
-          fi
-      - name: API changes
-        run: python3 scripts/api_check.py
+      - name: Require successful shared checks
+        run: test "$RESULT" = success
+  migrations-check:
+    if: github.event_name == 'pull_request'
+    uses: fin-assist/go-ci/.github/workflows/shared-migrations.yml@ecca25f4c7a74f6d2fa6040aa79d39ccda272e96 # main
+    with:
+      revision: 'ecca25f4c7a74f6d2fa6040aa79d39ccda272e96'
 
   migrations:
-    if: github.event_name == 'pull_request'
+    needs: migrations-check
+    if: always() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 2
     env:
-      # Passed through the environment, never expanded into the script text.
-      BASE_REF: ${{ github.base_ref }}
+      RESULT: ${{ needs.migrations-check.result }}
     steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      # A released migration runs in every service that updated the library: it is never
-      # edited; a change goes into a new file.
-      - name: Existing migrations are unchanged
-        run: |
-          changed=$(git diff --name-only --diff-filter=MDR "origin/$BASE_REF...HEAD" -- 'migrations/*.sql')
-          if [ -n "$changed" ]; then
-            echo "Existing migrations were modified, renamed or deleted:"
-            echo "$changed"
-            echo "Add a new migration instead (docs/releasing.md, «Миграции»)."
-            exit 1
-          fi
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-      # Squawk lints the new up files; down files are checked by the up -> down -> up test.
-      - name: Squawk
-        run: |
-          files=$(git diff --name-only --diff-filter=A "origin/$BASE_REF...HEAD" -- 'migrations/*.up.sql')
-          if [ -z "$files" ]; then
-            echo "No new migrations."
-            exit 0
-          fi
-          npx --yes squawk-cli@2.70.0 --config .squawk.toml $files
+      - name: Require successful shared checks
+        run: test "$RESULT" = success

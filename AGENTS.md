@@ -40,13 +40,13 @@ for itself: what it does, its YouTrack issue, which services use it.
 | Integration guide for services | `README.md`, «Внедрение» |
 | Versions, compatibility, releases, Renovate | `docs/releasing.md`, `CHANGELOG.md`, `.github/workflows/release.yml`, `renovate.json` |
 | Suite execution/profile guards and native coverage policy, changelog checks, lint policy probe (`test_lint_policy.py`) and workflow hardening tests (`test_workflow_hardening.py`) | `scripts/` |
-| CI, lint | `.github/workflows/ci.yml`, `.golangci.yml`, `.squawk.toml`, `Makefile` |
+| CI, lint | `.github/workflows/ci.yml`, `.finassist-ci.json` (shared source and overrides), `Makefile` |
 | PR review by Claude | `.github/workflows/claude.yml` |
 
 ### Stack
 
-Versions are in `go.mod` (Go toolchain included), `.github/workflows/ci.yml` and `Makefile` (golangci-lint,
-gorelease), `internal/pgtest.DefaultImage` (PostgreSQL), `go-migrate` (test-only, FIN-318). The same pieces as the services where needed: pgx v5,
+Versions are in `go.mod` (Go toolchain included), the pinned shared source `common/versions.json` (linters)
+and `Makefile` / pinned `shared-api.yml` (matching gorelease pins), `internal/pgtest.DefaultImage` (PostgreSQL), `go-migrate` (test-only, FIN-318). The same pieces as the services where needed: pgx v5,
 golang-migrate, grpc-go, protobuf, prometheus client_golang, testcontainers-go, squawk. A new dependency is named in
 the PR with why it is needed: every service that imports the library inherits it.
 
@@ -63,6 +63,9 @@ the PR with why it is needed: every service that imports the library inherits it
   the workflows with `yaml.safe_load` and fails without it. `scripts/test_lint_policy.py` also builds the pinned
   golangci-lint and downloads the probe's pinned modules (prometheus, otel, x/net, glog, klog, automaxprocs,
   automemlimit; versions in the script or from `go.mod`), so it needs the module proxy.
+- Script regressions resolve the pinned shared source with `scripts/common_ci.py`: the initial setup needs GitHub access,
+  or an intact prepopulated `.finassist-ci/<revision>` cache. Offline execution also needs the already resolved
+  tool/module dependencies listed above; the isolated bootstrap fixtures themselves use local Git after setup.
 - `make cover` needs the `covdata` tool, which a toolchain downloaded by `GOTOOLCHAIN` lacks ("no such tool
   covdata"): build it once with `T=$(go env GOTOOLDIR); chmod u+w "$T"; go build -o "$T/covdata" cmd/covdata`.
 - Every test or lint run gets a timeout (`timeout 600 make test` or the tool's own): a hung run blocks the session.
@@ -110,7 +113,7 @@ The same priorities and rules as the services (`AGENTS.md` of `fin-assist/go-ser
   `promhttp.HandlerFor`, `InstrumentMetricHandler(reg, …)`, methods of a passed `*slog.Logger`, `Registerer`,
   `*http.Client`, `TracerProvider` or `MeterProvider`. Other ways to reach process-wide state are not lint rules and
   are not review findings about lint bypasses; review checks the principle itself.
-  `scripts/test_lint_policy.py` runs the pinned linter (version from `Makefile`, equal to `ci.yml`) on a hermetic probe
+  `scripts/test_lint_policy.py` runs the pinned linter (`common/versions.json` at the manifest SHA) on a hermetic probe
   module, for linux and windows: every forbidden and allowed form, chains such as
   `prometheus.DefaultRegisterer.MustRegister(c)` or `log.Default().Printf` and an aliased import are reported by their
   first identifier. The probe's versions follow one rule (`expected_pin`): a module in `go.mod` gets max(`go.mod`, its
@@ -350,3 +353,9 @@ identifier, behaviour, migration and dependency check:
 ## Renovate automation
 
 FIN-211: dependency-only Renovate PRs may be merged/closed by the reviewed `renovate-policy.yml` controller, after exact-head required CI and bot-only commit checks. Ordinary PRs and release-to-main PRs still require the owner. Do not enable native automerge or bypass protections. Preserve base policy in `renovate-base.json` (schedules, groups, allowed versions and manual Go upgrades); generated target/version approvals live on the separate `renovate-policy` branch. Failed exact values are isolated for explicit Dashboard approval; new values keep their original groups. AndroidX/Compose and mixed groups never auto-merge. See `docs/renovate-policy.md` for credentials, safeguards, bootstrap and verification.
+
+## Shared Go CI (FIN-372)
+
+`.finassist-ci.json` pins `fin-assist/go-ci` by full SHA and declares the lint profile/overrides. CI workflow calls use the same SHA. `make lint`, `make fmt`, `make lint-config` and `make lint-migrations BASE_REF=origin/main` resolve that source with `scripts/common_ci.py`; generated linter configs live in ignored `.finassist-ci/generated/`. Do not restore copied root linter configs. Preserve coverage/test/API/security gates and the bank-statement-data-only smallint exception. Update and rollback all pins in one PR. Details: https://github.com/fin-assist/go-ci/blob/main/docs/shared-go-ci.md.
+
+When a shared revision changes `common/bootstrap.py`, copy its exact pinned bytes into `scripts/common_ci.py` in the same PR as every pin update. The byte-equality contract deliberately rejects partial updates; do not restore copied linter configs. Rollback restores the matching bootstrap copy and pins together. A human bootstrap-sync commit makes a Renovate PR manual and ineligible for FIN-211 automerge.

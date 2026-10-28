@@ -16,3 +16,6 @@ node_modules/
 /*.coverage.txt
 /*.report.txt
 /test-names.txt
+
+# FIN-372 pinned shared source and generated configs
+.finassist-ci/
