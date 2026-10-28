@@ -46,7 +46,7 @@ for itself: what it does, its YouTrack issue, which services use it.
 ### Stack
 
 Versions are in `go.mod` (Go toolchain included), the pinned shared source `common/versions.json` (linters)
-and `Makefile` (gorelease), `internal/pgtest.DefaultImage` (PostgreSQL), `go-migrate` (test-only, FIN-318). The same pieces as the services where needed: pgx v5,
+and `Makefile` / pinned `shared-api.yml` (matching gorelease pins), `internal/pgtest.DefaultImage` (PostgreSQL), `go-migrate` (test-only, FIN-318). The same pieces as the services where needed: pgx v5,
 golang-migrate, grpc-go, protobuf, prometheus client_golang, testcontainers-go, squawk. A new dependency is named in
 the PR with why it is needed: every service that imports the library inherits it.
 

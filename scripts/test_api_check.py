@@ -1,6 +1,7 @@
 """Exercise the CI entry point with real local Git remotes and a deterministic Go boundary."""
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -131,6 +132,9 @@ sys.exit(state.get("status", 0))
     def test_captured_reports_require_the_recorded_tool_pin(self):
         workflow = yaml.safe_load(SHARED_API_WORKFLOW.read_text())
         self.assertEqual(workflow["env"]["GORELEASE"], RECORDED_GORELEASE)
+        local_pin = re.search(r"^GORELEASE := (\S+)$", (ROOT / "Makefile").read_text(), re.M)
+        self.assertIsNotNone(local_pin)
+        self.assertEqual(local_pin[1], RECORDED_GORELEASE)
 
     def test_pending_candidate_validates_against_previous_release(self):
         calls = self.assert_passes()

@@ -107,7 +107,10 @@ def verify_checkout(cache: Path, revision: str) -> None:
         else:
             raise ValueError("Pinned source must contain regular files and directories only.")
     actual = set()
-    for directory, dirs, files in os.walk(cache, followlinks=False):
+    def reject_walk_error(error):
+        raise ValueError("Shared CI cache cannot be fully enumerated.") from error
+
+    for directory, dirs, files in os.walk(cache, followlinks=False, onerror=reject_walk_error):
         parent = Path(directory)
         if parent == cache:
             dirs.remove(".git")
