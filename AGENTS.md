@@ -63,6 +63,9 @@ the PR with why it is needed: every service that imports the library inherits it
   the workflows with `yaml.safe_load` and fails without it. `scripts/test_lint_policy.py` also builds the pinned
   golangci-lint and downloads the probe's pinned modules (prometheus, otel, x/net, glog, klog, automaxprocs,
   automemlimit; versions in the script or from `go.mod`), so it needs the module proxy.
+- Script regressions resolve the pinned shared source with `scripts/common_ci.py`: the initial setup needs GitHub access,
+  or an intact prepopulated `.finassist-ci/<revision>` cache. Offline execution also needs the already resolved
+  tool/module dependencies listed above; the isolated bootstrap fixtures themselves use local Git after setup.
 - `make cover` needs the `covdata` tool, which a toolchain downloaded by `GOTOOLCHAIN` lacks ("no such tool
   covdata"): build it once with `T=$(go env GOTOOLDIR); chmod u+w "$T"; go build -o "$T/covdata" cmd/covdata`.
 - Every test or lint run gets a timeout (`timeout 600 make test` or the tool's own): a hung run blocks the session.

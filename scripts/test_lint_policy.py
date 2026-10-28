@@ -27,7 +27,7 @@ except ImportError as error:  # a missing parser must fail the checks, never ski
 ROOT = Path(__file__).resolve().parents[1]
 COMMON = Path(subprocess.check_output(
     [sys.executable, str(ROOT / "scripts/common_ci.py")], text=True, timeout=180).strip())
-subprocess.run([sys.executable, str(COMMON / "render_lint.py"), "--root", str(ROOT)],
+subprocess.run([sys.executable, "-B", str(COMMON / "render_lint.py"), "--root", str(ROOT)],
                check=True, timeout=60)
 CONFIG = ROOT / ".finassist-ci/generated/.golangci.yml"
 LINT_VERSION = json.loads((COMMON / "versions.json").read_text())["golangci-lint"]
