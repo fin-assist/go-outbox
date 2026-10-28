@@ -3,7 +3,6 @@ SHELL := /bin/bash
 GO_TEST_COVERAGE_VERSION := v2.20.1
 TEST_TIMEOUT ?= 8m
 COVERAGE := GOTOOLCHAIN=auto go run github.com/vladopajic/go-test-coverage/v2@$(GO_TEST_COVERAGE_VERSION)
-GOLANGCI_LINT_VERSION := v2.15.0
 GORELEASE := golang.org/x/exp/cmd/gorelease@v0.0.0-20261014143641-f0251eb4aa3e
 export GOPRIVATE := github.com/fin-assist/*
 
@@ -54,11 +53,11 @@ cover: collect-unit collect-integration collect-api ## collect all profiles befo
 	@status=0; for level in unit integration api; do $(MAKE) check-$$level || status=1; done; \
 	$(MAKE) cover-combined || status=1; exit "$$status"
 
-lint: ## golangci-lint of the pinned version
-	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
+lint: ## shared pinned golangci-lint and rendered configuration
+	@common=$$(python3 -B scripts/common_ci.py) && python3 -B "$$common/lint.py" lint --root "$(CURDIR)"
 
-fmt:
-	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) fmt ./...
+fmt: ## format using the same pinned linter and configuration
+	@common=$$(python3 -B scripts/common_ci.py) && python3 -B "$$common/lint.py" fmt --root "$(CURDIR)"
 
 api: ## exported API against the latest tag and the suggested next version (informational)
 	-go run $(GORELEASE) -base=$$(git tag --list 'v*' --sort=-v:refname | head -n1 | grep . || echo none)
@@ -69,3 +68,12 @@ release-check: ## VERSION=vX.Y.Z: gorelease accepts the version and CHANGELOG.md
 	test "$$(python3 scripts/changelog.py latest)" = "$(VERSION)"
 	go run $(GORELEASE) -base=$$(git tag --list 'v*' --sort=-v:refname | head -n1 | grep . || echo none) -version=$(VERSION) \
 		| tee /dev/stderr | grep -q '^$(VERSION) is a valid semantic version for this release'
+
+# FIN-372: shared lint source, identical locally and in CI.
+BASE_REF ?= origin/main
+.PHONY: lint-config lint-migrations
+lint-config: ## render the declared shared linter profile without running Go
+	python3 -B scripts/common_ci.py render
+
+lint-migrations: ## immutable SQL and Squawk on added up migrations
+	@common=$$(python3 -B scripts/common_ci.py) && python3 -B "$$common/lint.py" migrations --root "$(CURDIR)" --base "$(BASE_REF)"

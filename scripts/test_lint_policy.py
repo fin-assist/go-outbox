@@ -1,11 +1,11 @@
-"""The forbidigo and depguard rules in .golangci.yml reject the core of process-wide state (FIN-322).
+"""The forbidigo and depguard rules in the shared .golangci.yml reject the core of process-wide state (FIN-322).
 
-The pinned golangci-lint (version from the Makefile) runs with the repository's
+The pinned golangci-lint (version from the pinned shared source) runs with the repository's
 .golangci.yml on a generated probe module: one line per forbidden identifier, which must
 be reported, chains and an aliased import, blank imports rejected by depguard, and the
 allowed forms (constructors, adapters, methods on injected values), which must not. All
 probe dependencies are pinned. The probe runs for linux and windows. Static checks pin analyze-types, the exclusions and the
-linter version shared with ci.yml.
+immutable source shared with ci.yml.
 """
 import json
 import os
@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -24,8 +25,12 @@ except ImportError as error:  # a missing parser must fail the checks, never ski
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG = ROOT / ".golangci.yml"
-LINT_VERSION = re.search(r"^GOLANGCI_LINT_VERSION := (\S+)$", (ROOT / "Makefile").read_text(), re.M)[1]
+COMMON = Path(subprocess.check_output(
+    [sys.executable, str(ROOT / "scripts/common_ci.py")], text=True, timeout=180).strip())
+subprocess.run([sys.executable, str(COMMON / "render_lint.py"), "--root", str(ROOT)],
+               check=True, timeout=60)
+CONFIG = ROOT / ".finassist-ci/generated/.golangci.yml"
+LINT_VERSION = json.loads((COMMON / "versions.json").read_text())["golangci-lint"]
 GO_MOD = (ROOT / "go.mod").read_text()
 
 
@@ -286,7 +291,18 @@ class ConfigTests(unittest.TestCase):
 
     def test_probe_uses_the_linter_version_of_ci(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
-        self.assertEqual(workflow["env"]["GOLANGCI_LINT_VERSION"], LINT_VERSION)
+        pin = json.loads((ROOT / ".finassist-ci.json").read_text())["revision"]
+        calls = {key: job for key, job in workflow["jobs"].items() if "uses" in job}
+        self.assertTrue(calls, "The consumer must actually invoke shared workflows")
+        for key, job in calls.items():
+            self.assertTrue(job["uses"].startswith("fin-assist/go-service-template/.github/workflows/"))
+            self.assertTrue(job["uses"].endswith("@" + pin))
+            self.assertEqual(job["with"]["revision"], pin)
+            gate = workflow["jobs"][key.removesuffix("-check")]
+            self.assertEqual(gate["needs"], key)
+            self.assertIn("always()", gate["if"])
+            self.assertEqual(gate["env"]["RESULT"], "${{ needs." + key + ".result }}")
+            self.assertEqual(gate["steps"][0]["run"], 'test "$RESULT" = success')
 
 
 class PinTests(unittest.TestCase):

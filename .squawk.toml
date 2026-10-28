@@ -1,9 +1,0 @@
-# Squawk lints migrations in CI (FIN-115, docs/migrations.md).
-pg_version = "18.0"
-# golang-migrate sends each file as one simple query: PostgreSQL runs it as one implicit
-# transaction, so rules for "inside a transaction" apply.
-assume_in_transaction = true
-# The migrate command sets lock_timeout and statement_timeout for the whole session
-# (MIGRATE_LOCK_TIMEOUT, MIGRATE_STATEMENT_TIMEOUT), so files do not repeat them.
-# Integer width follows the domain range; a blanket bigint rule is disabled (FIN-214).
-excluded_rules = ["require-lock-timeout", "require-statement-timeout", "prefer-bigint-over-int"]

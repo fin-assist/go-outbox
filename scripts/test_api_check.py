@@ -13,6 +13,9 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
+COMMON = Path(subprocess.check_output(
+    [sys.executable, str(ROOT / "scripts/common_ci.py")], text=True, timeout=180).strip())
+SHARED_API_WORKFLOW = COMMON.parent / ".github/workflows/shared-api.yml"
 VERSION = "v0.1.1"
 # Complete stdout + stderr captured from the pinned go run on a file:// proxy.
 RECORDED_GORELEASE = 'golang.org/x/exp/cmd/gorelease@v0.0.0-20261014143641-f0251eb4aa3e'
@@ -97,8 +100,8 @@ sys.exit(state.get("status", 0))
 
     def run_check(self, report=VALID, status=0, **state):
         (self.root / "state.json").write_text(json.dumps(dict(report=report, status=status, **state)))
-        workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
-        script = next(step["run"] for step in workflow["jobs"]["api"]["steps"]
+        workflow = yaml.safe_load(SHARED_API_WORKFLOW.read_text())
+        script = next(step["run"] for step in workflow["jobs"]["check"]["steps"]
                       if step.get("name") == "API changes")
         env = dict(os.environ, FIXTURE_ROOT=str(self.root), FAKE_PYTHON=sys.executable,
                    FAKE_GO=str(self.fake), GITHUB_STEP_SUMMARY=str(self.root / "summary.md"),
@@ -126,7 +129,7 @@ sys.exit(state.get("status", 0))
         return calls
 
     def test_captured_reports_require_the_recorded_tool_pin(self):
-        workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+        workflow = yaml.safe_load(SHARED_API_WORKFLOW.read_text())
         self.assertEqual(workflow["env"]["GORELEASE"], RECORDED_GORELEASE)
 
     def test_pending_candidate_validates_against_previous_release(self):

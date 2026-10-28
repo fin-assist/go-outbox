@@ -191,7 +191,7 @@ CI (`.github/workflows/ci.yml`):
 | Job | Что |
 |---|---|
 | `go` | `go mod tidy` без изменений, `go vet`, `go test -race` с PostgreSQL 18 в Docker (testcontainers), включая «вверх → вниз → вверх» для миграций; тесты скриптов; формат `CHANGELOG.md`; три независимых порога statements ≥80%, сводка и artifacts |
-| `lint` | golangci-lint (`.golangci.yml`): `forbidigo` против обхода `finerr` и против ядра процессного состояния (глобальные логгер, метрики, HTTP, OpenTelemetry, окружение и процесс, `AGENTS.md`); `depguard` против фреймворков и пакетов с побочными эффектами init |
+| `lint` | golangci-lint (`.finassist-ci/generated/.golangci.yml`): `forbidigo` против обхода `finerr` и против ядра процессного состояния (глобальные логгер, метрики, HTTP, OpenTelemetry, окружение и процесс, `AGENTS.md`); `depguard` против фреймворков и пакетов с побочными эффектами init |
 | `api` | `gorelease`: изменения экспортируемого API против последнего тега и предлагаемая версия; на PR выпуска — проверка номера из `CHANGELOG.md` |
 | `migrations` (PR) | существующие миграции не изменены, squawk по новым; ширина integer выбирается по диапазону домена (FIN-214) |
 
@@ -232,3 +232,7 @@ API проверяют публичный Go API со стороны потре�
 Проверка `api` устойчива к публикации тега во время CI: release-коммит сравнивается
 с предыдущим выпуском, удалённый тег проверяется по commit до и после `gorelease`.
 Подробности и границы исключения — [docs/releasing.md](docs/releasing.md#проверка-версии-в-ci-fin-264).
+
+## Общий Go CI и линтеры (FIN-372)
+
+`.finassist-ci.json` закрепляет общий источник полным SHA и объявляет профиль/исключения. CI вызывает reusable workflows того же SHA; `make lint`, `make fmt`, `make lint-config` и `make lint-migrations BASE_REF=origin/main` используют его через `scripts/common_ci.py`. Конфигурации создаются в игнорируемом `.finassist-ci/generated/`; локальные копии правил не редактируются. Первый локальный вызов требует доступ к GitHub. Обновление workflow и manifest pin приходит одним PR Renovate; откат возвращает прежние SHA вместе. [Источник, профили, обновление и откат](https://github.com/fin-assist/go-service-template/blob/main/docs/shared-go-ci.md). Проверки тестов/coverage, PostgreSQL 18, race и совместимость сохраняются.
