@@ -295,7 +295,7 @@ class ConfigTests(unittest.TestCase):
         calls = {key: job for key, job in workflow["jobs"].items() if "uses" in job}
         self.assertTrue(calls, "The consumer must actually invoke shared workflows")
         for key, job in calls.items():
-            self.assertTrue(job["uses"].startswith("fin-assist/go-service-template/.github/workflows/"))
+            self.assertTrue(job["uses"].startswith("fin-assist/go-ci/.github/workflows/"))
             self.assertTrue(job["uses"].endswith("@" + pin))
             self.assertEqual(job["with"]["revision"], pin)
             gate = workflow["jobs"][key.removesuffix("-check")]

@@ -12,9 +12,9 @@ permissions:
 # Tiny gates preserve the existing required check names.
 jobs:
   go-check:
-    uses: fin-assist/go-service-template/.github/workflows/shared-go.yml@805047dbdbfda37ff1df1e37f2c997d665942606 # main
+    uses: fin-assist/go-ci/.github/workflows/shared-go.yml@5d470e78d4cea7cdb92f03acf71762a5eae228be # main
     with:
-      revision: '805047dbdbfda37ff1df1e37f2c997d665942606'
+      revision: '5d470e78d4cea7cdb92f03acf71762a5eae228be'
       profile: library
     secrets:
       GO_MODULES_TOKEN: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
@@ -30,9 +30,9 @@ jobs:
       - name: Require successful shared checks
         run: test "$RESULT" = success
   lint-check:
-    uses: fin-assist/go-service-template/.github/workflows/shared-lint.yml@805047dbdbfda37ff1df1e37f2c997d665942606 # main
+    uses: fin-assist/go-ci/.github/workflows/shared-lint.yml@5d470e78d4cea7cdb92f03acf71762a5eae228be # main
     with:
-      revision: '805047dbdbfda37ff1df1e37f2c997d665942606'
+      revision: '5d470e78d4cea7cdb92f03acf71762a5eae228be'
     secrets:
       GO_MODULES_TOKEN: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
 
@@ -47,9 +47,9 @@ jobs:
       - name: Require successful shared checks
         run: test "$RESULT" = success
   api-check:
-    uses: fin-assist/go-service-template/.github/workflows/shared-api.yml@805047dbdbfda37ff1df1e37f2c997d665942606 # main
+    uses: fin-assist/go-ci/.github/workflows/shared-api.yml@5d470e78d4cea7cdb92f03acf71762a5eae228be # main
     with:
-      revision: '805047dbdbfda37ff1df1e37f2c997d665942606'
+      revision: '5d470e78d4cea7cdb92f03acf71762a5eae228be'
     secrets:
       GO_MODULES_TOKEN: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
 
@@ -65,9 +65,9 @@ jobs:
         run: test "$RESULT" = success
   migrations-check:
     if: github.event_name == 'pull_request'
-    uses: fin-assist/go-service-template/.github/workflows/shared-migrations.yml@805047dbdbfda37ff1df1e37f2c997d665942606 # main
+    uses: fin-assist/go-ci/.github/workflows/shared-migrations.yml@5d470e78d4cea7cdb92f03acf71762a5eae228be # main
     with:
-      revision: '805047dbdbfda37ff1df1e37f2c997d665942606'
+      revision: '5d470e78d4cea7cdb92f03acf71762a5eae228be'
 
   migrations:
     needs: migrations-check

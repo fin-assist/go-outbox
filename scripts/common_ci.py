@@ -14,7 +14,7 @@ import subprocess
 import sys
 import tempfile
 
-SOURCE_URL = "https://github.com/fin-assist/go-service-template.git"
+SOURCE_URL = "https://github.com/fin-assist/go-ci.git"
 CONFIG_NAME = ".finassist-ci.json"
 
 

@@ -45,8 +45,8 @@
     {
       "description": "FIN-372: update workflow and local lint pins together; rollback together",
       "matchPackageNames": [
-        "fin-assist/go-service-template",
-        "fin-assist/go-service-template/**"
+        "fin-assist/go-ci",
+        "fin-assist/go-ci/**"
       ],
       "groupName": "FinAssist shared Go CI",
       "groupSlug": "finassist-shared-go-ci",
@@ -66,8 +66,8 @@
       "matchStrings": [
         "\"revision\"\\s*:\\s*\"(?<currentDigest>[0-9a-f]{40})\""
       ],
-      "depNameTemplate": "fin-assist/go-service-template",
-      "packageNameTemplate": "fin-assist/go-service-template",
+      "depNameTemplate": "fin-assist/go-ci",
+      "packageNameTemplate": "fin-assist/go-ci",
       "datasourceTemplate": "github-digest",
       "currentValueTemplate": "main"
     },
@@ -80,8 +80,8 @@
       "matchStrings": [
         "\\brevision:\\s*'(?<currentDigest>[0-9a-f]{40})'"
       ],
-      "depNameTemplate": "fin-assist/go-service-template",
-      "packageNameTemplate": "fin-assist/go-service-template",
+      "depNameTemplate": "fin-assist/go-ci",
+      "packageNameTemplate": "fin-assist/go-ci",
       "datasourceTemplate": "github-digest",
       "currentValueTemplate": "main"
     }
