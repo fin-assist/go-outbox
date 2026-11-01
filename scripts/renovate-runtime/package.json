@@ -4,7 +4,7 @@
   "private": true,
   "description": "Pinned Renovate runtime for offline contract fixtures",
   "engines": {
-    "node": "24.x"
+    "node": "26.x"
   },
   "dependencies": {
     "renovate": "44.181.7"
