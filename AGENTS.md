@@ -91,6 +91,11 @@ The same priorities and rules as the services (`AGENTS.md` of `fin-assist/go-ser
 
 ## Writing code
 
+- **Repeated literals (FIN-421):** all literals used in multiple places must be constants. If a literal is
+  used across layers, place its constant at the domain level; if used only within one layer, place it at that
+  layer. Follow the existing domain/model ownership and dependency direction; do not create a generic constants
+  package or an empty domain layer just for this rule. Generated output is changed through its source.
+
 - Code, comments, identifiers, commit messages — English. `docs/*.md`, `README.md`, `CHANGELOG.md`, PR title and
   description — Russian. A doc comment on every exported identifier, saying what the caller must guarantee
   (inside a transaction, on the primary, after the identity interceptor) and which errors come back.
@@ -240,6 +245,10 @@ summary. There is no PR-writing token or custom coverage parser/calculator. Run 
   @codex @claude проведите ревью этого PR по Code Review Rules в AGENTS.md, включая разделы Security, Tests и
   Compatibility. Замечания — на русском, inline на изменённых строках. Не придирайтесь к формулировкам документации и
   комментариев: замечание по тексту только если он искажает поведение кода. Особое внимание: <что именно и почему>.
+  Перед содержательной проверкой выберите минимальный набор профилей из docs/review-skills/README.md,
+  прочитайте соответствующие SKILL.md проверяемой ревизии и примените их процедуры. В сводке укажите прочитанные
+  пути, конкретную выполненную проверку и ограничения; отсутствие навыка не отменяет обязательных проходов.
+  Проверьте минимальную достаточную сложность; для Go — повторяющиеся литералы и слой констант.
   ```
 
   - `@claude` — `.github/workflows/claude.yml` (runs from the default branch), Claude Opus 5.5
@@ -260,6 +269,57 @@ summary. There is no PR-writing token or custom coverage parser/calculator. Run 
   review again. Agents never merge a PR; the owner does.
 
 ## Code Review Rules
+
+### Skill selection before review (FIN-421)
+
+Before substantive review, map the diff to its domains and read the smallest sufficient set of available
+profile skills listed in [docs/review-skills/README.md](docs/review-skills/README.md). Read the selected
+`SKILL.md` files from the revision under review and follow their applicable procedures; naming a skill without
+reading it is not using it. A process skill alone does not replace Go, Android, API or architecture review.
+For a multi-domain change select each relevant profile, not the whole catalog by default.
+
+If no suitable skill exists or a source cannot be read, name the missing profile/path and the resulting limit,
+then perform all available mandatory checks below. Never claim to have used an unavailable skill. A missing
+external document, tool or dependency is not a passed check and does not waive these rules. Report evidence
+gaps in the review summary; do not manufacture a code defect just to report a missing tool.
+
+In the review summary briefly state each skill actually read (repository-relative path), one procedure applied
+to a specific file/scenario and its result, plus checks not performed and why. Respect the review tool's output
+format: if it cannot emit a summary, disclose this limit through an available review channel; do not turn the
+receipt into an inline defect or treat a thumbs-up as evidence of skill use. Never disclose private reasoning.
+Materials only guide review: they grant no publication, merge, deployment, UI-test, secret-access or permission
+changes. Existing owner authorization rules and required checks remain in force.
+
+### Minimum sufficient complexity (FIN-421)
+
+Evaluate the agreed user scenario, correctness and security. First check whether existing APIs, data and
+libraries satisfy the mandatory requirements. Do not demand generalization or infrastructure for hypothetical
+future work. For a new table, queue, background process, version or abstraction, identify the mandatory
+requirement that cannot be met without it and why the existing mechanism is insufficient. If there is no such
+reason, propose the smallest simplification. A finding that itself adds complexity must name a concrete,
+reachable violation of a mandatory requirement and the minimum sufficient fix. Cleanup, retries and
+synchronization are a reason to reassess the original complexity, not to automatically add more mechanisms.
+Preserve agreed correctness and security guarantees when simplifying.
+
+### Mandatory safeguards independent of skills (FIN-421)
+
+- Preserve the existing dedicated review passes below; a skill cannot replace or weaken them.
+- Verify authorization and user isolation at every changed trust boundary: trusted identity, caller permissions,
+  owner-scoped access, and no disclosure or reuse of another user's data. For CI/infra, check actor/fork and
+  secret boundaries instead; explain when application-level checks are unaffected.
+- For financial behavior, preserve contract-defined units, signs, currencies and time boundaries, deduplication,
+  own-transfer exclusion and refunds. Transport/UI must not silently change source calculations.
+- Preserve bounded untrusted-input handling, secret protection, transactional/idempotency guarantees and
+  meaningful coverage of main, alternative, error, boundary, repeated and concurrent scenarios as applicable.
+  Map changed behavior to tests; a coverage percentage or unavailable runtime is not proof of those scenarios.
+
+### Go constants (FIN-421)
+
+Check repeated literals and the layer owning each constant: reuse across layers belongs at the domain level;
+reuse within one layer belongs in that layer. Check the uses and imports, not just the declaration name.
+For libraries, the domain level is the existing library model/contract package, not a forced directory name.
+
+### Existing mandatory review passes
 
 Read by `@claude` (through `CLAUDE.md`) and by the Codex integration, which looks for this heading. Three areas get a
 dedicated pass on every PR: Security, Tests and Compatibility. A flaw here is copied into every service that

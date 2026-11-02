@@ -238,3 +238,8 @@ API проверяют публичный Go API со стороны потре�
 `.finassist-ci.json` закрепляет отдельный общий источник `fin-assist/go-ci` полным SHA и объявляет профиль/исключения. CI вызывает reusable workflows того же SHA; `make lint`, `make fmt`, `make lint-config` и `make lint-migrations BASE_REF=origin/main` используют его через `scripts/common_ci.py`. Конфигурации создаются в игнорируемом `.finassist-ci/generated/`; локальные копии правил не редактируются. Первый локальный вызов требует доступ к GitHub. Обновление workflow и manifest pin приходит одним PR Renovate; откат возвращает прежние SHA вместе. [Источник, профили, обновление и откат](https://github.com/fin-assist/go-ci/blob/main/docs/shared-go-ci.md). Проверки тестов/coverage, PostgreSQL 18, race и совместимость сохраняются.
 
 Если новая ревизия общего источника меняет `common/bootstrap.py`, в том же PR обновить `scripts/common_ci.py` точными байтами из закреплённого SHA вместе со всеми pins. Byte-equality contract намеренно отклонит частичный переход; конфиги линтеров обратно не копируются. Откат возвращает прежние pins и соответствующую копию bootstrap вместе. Человеческий коммит для такой синхронизации переводит Renovate PR в ручное сопровождение: автомерж FIN-211 к нему больше не применяется.
+
+## Профильное ревью (FIN-421)
+
+Перед ревью применяются [профильные навыки](docs/review-skills/README.md) из проверяемой ревизии.
+Обязательные требования, выбор и ограничения — в `AGENTS.md`, раздел `Code Review Rules`.
