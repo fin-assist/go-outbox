@@ -97,11 +97,11 @@ The same priorities and rules as the services (`AGENTS.md` of `fin-assist/go-ser
   constants carry values only and must not import outer-layer behavior. In layered services the domain level is
   `internal/domain`; in a flat library it is the library's model/contract package. If no domain package exists,
   introduce only the concrete value's domain owner when an actual cross-layer use requires it, not an empty
-  layer in a documentation PR. Different meanings get separate named constants even when their values coincide.
+  layer in advance. Different meanings get separate named constants even when their values coincide.
   Tests keep independent expected constants derived from the contract, not aliases of the production constant,
   so an accidental production-value change still fails. Generated output is changed through its source.
-  Review applies this rule to new/changed code; this instruction-only PR does not refactor unrelated existing
-  literals or claim that the existing codebase already satisfies the rule.
+  Review applies this rule to new and changed code; it does not demand refactoring unrelated existing
+  literals, and the existing codebase is not claimed to satisfy it.
 
 - Code, comments, identifiers, commit messages — English. `docs/*.md`, `README.md`, `CHANGELOG.md`, PR title and
   description — Russian. A doc comment on every exported identifier, saying what the caller must guarantee
