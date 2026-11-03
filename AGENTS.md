@@ -327,7 +327,7 @@ Preserve agreed correctness and security guarantees when simplifying.
 
 Check repeated literals and the layer owning each constant: reuse across layers belongs at the domain level;
 reuse within one layer belongs in that layer. Check the uses and imports, not just the declaration name.
-Use the domain definition and independent test expectations in Writing code / Writing Go code above.
+Use the domain definition and independent test expectations in Writing code above.
 Do not merge constants of different meanings merely because the values match, or demand unrelated legacy cleanup.
 
 ### Existing mandatory review passes
