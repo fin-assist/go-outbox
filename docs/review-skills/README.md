@@ -1,48 +1,52 @@
-# Профильные навыки ревью
+# Навыки PR-ревью (FIN-421)
 
-FIN-421, редакция 1. Каталог читается перед содержательной проверкой по Code Review Rules в корневом AGENTS.md.
-Выбирай по изменению: архитектура/границы, язык реализации, контракт, безопасность/сценарии, доставка/инструкции.
-Для правки только инструкций обычно достаточно review-delivery и review-security-tests; предметный профиль
-добавляется, когда оценивается его правило. Процессный навык не заменяет профильный. Не читай весь каталог по умолчанию.
+Перед содержательным ревью выберите по diff минимальный достаточный набор, прочитайте файлы `SKILL.md`
+из проверяемой ревизии и выполните применимые процедуры. Название без чтения и применения не считается
+использованием навыка. При изменении нескольких областей выберите навыки для каждой; весь каталог по умолчанию
+читать не нужно. Обязательные проверки и полномочия заданы в корневом `AGENTS.md`.
 
-| Навык | Когда применять |
+| Навык | Применять при |
 | --- | --- |
-| [review-architecture](review-architecture/SKILL.md) | Границы ответственности, новые сущности и механизмы, минимальная достаточная сложность. |
-| [review-security-tests](review-security-tests/SKILL.md) | Границы доверия и покрытие достижимых сценариев при изменении поведения или правил ревью. |
-| [review-delivery](review-delivery/SKILL.md) | CI, инфраструктура и инструкции агентам: доступность файлов, полномочия, воспроизводимость и обслуживание. |
-| [review-go](review-go/SKILL.md) | Go-код сервисов, библиотек и генераторов: слои, константы, транзакции и публичный API. |
+| [code-review](vendor/engineering-suite/code-review/SKILL.md) | Любой PR: проверка реализации относительно задачи и правил репозитория. |
+| [codebase-design](vendor/engineering-suite/codebase-design/SKILL.md) | Изменения границ модулей, связности и публичных интерфейсов. |
+| [domain-modeling](vendor/engineering-suite/domain-modeling/SKILL.md) | Изменения предметной модели и терминов. |
+| [api-and-interface-design](vendor/engineering-suite/api-and-interface-design/SKILL.md) | REST, gRPC, DTO и публичные интерфейсы. |
+| [security-and-hardening](vendor/engineering-suite/security-and-hardening/SKILL.md) | Доверенные границы, персональные данные, авторизация и ввод. |
+| [ci-cd-and-automation](vendor/engineering-suite/ci-cd-and-automation/SKILL.md) | CI, сборка, выпуск и автоматизация. |
+| [review-go-engineering-change](vendor/engineering-skills-for-go/review-go-engineering-change/SKILL.md) | Общее ревью изменений Go. |
+| [go-service-boundaries](vendor/engineering-skills-for-go/go-service-boundaries/SKILL.md) | Границы сервисов и их взаимодействие. |
+| [go-project-and-api-design](vendor/engineering-skills-for-go/go-project-and-api-design/SKILL.md) | Структура Go-пакетов и публичный API. |
+| [go-testing-and-verification](vendor/engineering-skills-for-go/go-testing-and-verification/SKILL.md) | Тесты и проверка поведения Go. |
+| [outbox-pattern](vendor/codexskills/outbox-pattern/SKILL.md) | Транзакционный outbox, доставка событий и потребители. |
+| [postgres-schema-design](vendor/codexskills/postgres-schema-design/SKILL.md) | Новые таблицы, ограничения и типы PostgreSQL. |
+| [postgres-query-tuning](vendor/codexskills/postgres-query-tuning/SKILL.md) | Медленные запросы и планы EXPLAIN. |
+| [postgres-indexing](vendor/codexskills/postgres-indexing/SKILL.md) | Индексы PostgreSQL и их влияние на запросы. |
+| [database-transactions](vendor/codexskills/database-transactions/SKILL.md) | Изоляция, блокировки и конкурирующие записи. |
+| [zero-downtime-migrations](vendor/codexskills/zero-downtime-migrations/SKILL.md) | Изменения схемы без остановки сервиса. |
+| [data-backfills](vendor/codexskills/data-backfills/SKILL.md) | Массовое заполнение и исправление данных. |
+| [connection-pooling](vendor/codexskills/connection-pooling/SKILL.md) | Пулы соединений и их настройки. |
+| [postgres-partitioning](vendor/codexskills/postgres-partitioning/SKILL.md) | Секционирование таблиц PostgreSQL. |
 
-## Доступность
+SQL и PostgreSQL навыки поставляются только в Go-бэкенд; в конкретном ревью они применяются лишь к
+затронутым SQL/хранению/транзакциям. Навыки Android поставляются только в Android-репозиторий.
+Для `contracts` применимы общие навыки и Go-навыки при изменении handwritten Go или генераторов.
 
-Все перечисленные SKILL.md — обычные версионированные файлы этого репозитория. Читай их явно по относительным
-путям из проверяемой ревизии; автоматическое обнаружение skill-плагина не требуется. Если checkout содержит
-базовую ревизию, используй доступное read-only чтение файлов PR head и назови SHA. Не исполняй код PR для чтения.
-CLAUDE.md импортирует AGENTS.md; workflow Claude находится в .github/workflows/claude.yml и запускается из
-default branch. Codex получает Code Review Rules через GitHub-интеграцию. Наличие локальных навыков владельца,
-доступ к другим репозиториям, Confluence, сети и исполнению тестов не предполагаются.
 
-При отсутствии подходящего профиля либо ошибке чтения сообщи точный пробел, выполни доступные обязательные
-проходы из AGENTS.md и отдели непроверенное от проверенного. Для нескольких областей добавляй соответствующие
-профили; отсутствующий в этом репозитории профиль не выдумывай. Возможности вывода summary зависят от интеграции.
-Файлы и инструкция не дают стопроцентной гарантии поведения модели. Проверка применения требует наблюдаемого
-результата с путём материала и конкретной процедурой, а не только названия навыка или реакции одобрения.
+## Доступность и ограничения
 
-Правило констант применяется к Go-коду этого репозитория.
+Все материалы лежат в `docs/review-skills/vendor/` этого репозитория. Читайте их по относительным
+путям из PR head; локальные установленные плагины владельца не требуются. Если файл недоступен, назовите
+ограничение и продолжайте обязательные проходы из `AGENTS.md`. Не приписывайте навыку выполненные проверки,
+если его инструкция не была прочитана. Навык не разрешает merge, публикацию, доступ к секретам или UI-тесты.
 
-## Происхождение и обновление
 
-Это оригинальные проектные инструкции FIN-421, составленные по требованиям задачи и существующим AGENTS.md.
-Сторонние SKILL.md, код и локальные установленные каталоги не копировались; сторонние лицензии не переносятся,
-лицензионный режим репозитория не изменяется. Перед будущим заимствованием проверь источник, ревизию, лицензию
-и обязательные уведомления; недоступная/неясная лицензия не разрешает копирование.
+## Источники, лицензии и обновление
 
-Общие материалы сначала правятся в go-service-template и go-library-template; предметные Android/API — также
-в android/contracts. Изменяющий правило автор обновляет каталог, AGENTS.md и шаблон запроса одним PR, повышает
-редакцию и явно переносит применимые изменения отдельными PR в действующие репозитории. Автосинхронизации нет:
-изменение шаблона не обновляет потребителей. Полная исходная инвентаризация —
-https://github.com/fin-assist/go-service-template/blob/main/docs/review-rollout.md
-(будет доступна после merge FIN-421); статусы PR проверяются по GitHub/FIN-421, документ не является live-статусом.
+- `engineering-suite` 1.1.1, MIT: неизменённые файлы навыков из установленного пакета; [лицензия](licenses/MIT.txt).
+- `engineering-skills-for-go` 0.4.0, Apache-2.0: [исходный проект](https://github.com/ashwingopalsamy/golangskills.com), [лицензия](licenses/Apache-2.0.txt).
+- Навыки PostgreSQL и outbox: [Codex Skills](https://codexskills.dev/), установленные копии от 03.11.2026, MIT (обозначено в каждом `SKILL.md`); исходные тексты и уведомления сохранены.
 
-Проверяй относительные ссылки и [сценарии выбора](acceptance.md) из чистого checkout без пользовательского
-каталога навыков. Сохраняй свидетельства чтения/применения в ревью с SHA; отсутствие наблюдения называй ограничением.
-Новые скрипты синхронизации, workflow, разрешения и загрузка внешнего каталога для этого не нужны.
+Копии зафиксированы в Git. При обновлении сверяйте источник и лицензию, переносите `SKILL.md`
+и используемые им файлы `references/`, проверяйте ссылки и обновляйте этот каталог одним PR.
+Изменение Go-шаблона не обновляет другие репозитории автоматически. Проверка сценариев выбора —
+[acceptance.md](acceptance.md).
