@@ -81,7 +81,7 @@ Check `.agents/qa-project-context.md` first — if it exists, use it and skip an
 
 ## Migration Testing
 
-For runnable migration test code, see `references/migration-tests.md`.
+For migration scenarios and safety checks, see `references/migration-tests.md`.
 
 ### Forward Migration Validation
 
@@ -111,13 +111,13 @@ Capture a `pg_dump --schema-only` snapshot before and after the migration and di
 
 **TypeORM:** `DataSource` with `migrationsRun: false`, then `dataSource.runMigrations()` and `dataSource.undoLastMigration()` in tests. Same shape: apply all, verify schema, revert last, verify rollback.
 
-**Alembic (Python):** test `alembic upgrade head` from empty DB, `alembic downgrade base` for full rollback, and an upgrade→downgrade→upgrade cycle to verify schema consistency. Use a fresh test database via fixture.
+**Alembic (Python):** in projects already using it, test the intended upgrade and, where reversible, its actual downgrade/re-upgrade path in an isolated test database. Do not force downgrade-to-base for intentionally irreversible migrations.
 
 ---
 
 ## Data Integrity Testing
 
-For runnable constraint and referential-integrity code, see `references/integrity-and-seed.md`.
+For constraint and referential-integrity checks, see `references/integrity-and-seed.md`.
 
 ### Constraint Testing
 
@@ -135,7 +135,7 @@ Test exact integer minor-unit round trips and relevant signed/zero/range boundar
 
 ## Seed Data Management
 
-For runnable factory, seed-script, and isolation code, see `references/integrity-and-seed.md`.
+For fixture and isolation guidance, see `references/integrity-and-seed.md`.
 
 ### Factory Pattern (TypeScript)
 
@@ -153,7 +153,7 @@ A rollback wrapper isolates only writes using that same transaction/connection. 
 
 ## Query Performance Testing
 
-For runnable EXPLAIN ANALYZE and index-validation code, see `references/performance-and-docker.md`.
+For contextual plan and index-validation guidance, see `references/performance-and-docker.md`.
 
 ### Plan and workload evidence
 
