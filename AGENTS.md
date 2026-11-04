@@ -300,6 +300,20 @@ output format. Never disclose private reasoning.
 Materials only guide review: they grant no publication, merge, deployment, UI-test, secret-access or permission
 changes. Existing owner authorization rules and required checks remain in force.
 
+### PostgreSQL query efficiency (FIN-421)
+
+For changed SQL and indexes, select postgres-query-tuning and/or postgres-indexing from the catalog as applicable.
+Check expected data volume and distribution, rows/pages read and returned, database round trips (including N+1),
+joins, filters, sorting, pagination and whether indexes match actual predicates and ordering. Consider the write
+and maintenance cost of every proposed index. Optimizations must preserve results, user isolation, exact money
+representation and required ordering.
+For a material performance risk inspect EXPLAIN; when an authorized representative test environment is available,
+use EXPLAIN (ANALYZE, BUFFERS) with realistic data and significant parameter cases. Distinguish execution time,
+lock waits and pool waits; consider frequency and total cost. A Seq Scan alone is not a defect, and a tiny fixture
+does not establish production performance. If measurements are unavailable, perform available static checks and
+do not claim measured efficiency. EXPLAIN ANALYZE executes the statement; these rules grant no production access
+or permission to run writes. Do not require speculative indexes, caches or schema changes without a concrete cause.
+
 ### Minimum sufficient complexity (FIN-421)
 
 Evaluate the agreed user scenario, correctness and security. First check whether existing APIs, data and
