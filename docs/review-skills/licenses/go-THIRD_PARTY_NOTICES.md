@@ -19,3 +19,4 @@ If third-party text or code is intentionally incorporated later, its exact licen
 ## Visual assets
 
 The three plugin directory logos use characters `59.png`, `51 2 Large.png`, and `61 2 Large.png` from Maria Letta's [Free Gophers Pack](https://github.com/MariaLetta/free-gophers-pack). The pack is dedicated to the public domain under CC0 1.0 Universal. The distributed images are resized without changing the character artwork. Attribution is included voluntarily for provenance; CC0 does not require it.
+

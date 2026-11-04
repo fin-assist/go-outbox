@@ -1,0 +1,217 @@
+{
+  "snapshot_date": "2026-11-04",
+  "repository": "fin-assist/go-outbox",
+  "skills": {
+    "code-review-and-quality": {
+      "url": "https://github.com/addyosmani/agent-skills",
+      "comparison_revision": "301b02b12bff98e4688e6984af6556802322bbde",
+      "path": "skills/code-review-and-quality",
+      "local_differences": [
+        "SKILL.md",
+        "references/performance-checklist.md",
+        "references/security-checklist.md"
+      ],
+      "license": "MIT",
+      "licenses": [
+        "licenses/addyosmani-MIT.txt"
+      ],
+      "snapshot": "2026-11-04"
+    },
+    "security-and-hardening": {
+      "url": "https://github.com/addyosmani/agent-skills",
+      "comparison_revision": "301b02b12bff98e4688e6984af6556802322bbde",
+      "path": "skills/security-and-hardening",
+      "local_differences": [
+        "SKILL.md",
+        "references/hardening-patterns.md",
+        "references/security-checklist.md"
+      ],
+      "license": "MIT",
+      "licenses": [
+        "licenses/addyosmani-MIT.txt"
+      ],
+      "snapshot": "2026-11-04"
+    },
+    "cicd-security": {
+      "url": "https://github.com/briiirussell/cybersecurity-skills",
+      "comparison_revision": "18642b272e9fe57ed6bdf3fd96614915e8a4d71d",
+      "path": "skills/cicd-security",
+      "local_differences": [],
+      "license": "MIT",
+      "licenses": [
+        "licenses/briiirussell-MIT.txt"
+      ],
+      "snapshot": "2026-11-04"
+    },
+    "github-actions-validator": {
+      "url": "https://github.com/akin-ozer/cc-devops-skills",
+      "comparison_revision": "276af751e659315aaf56d3ad13d7c26f4e72e28a",
+      "path": "devops-skills-plugin/skills/github-actions-validator",
+      "local_differences": [],
+      "license": "Apache-2.0",
+      "licenses": [
+        "licenses/akin-ozer-Apache-2.0.txt"
+      ],
+      "snapshot": "2026-11-04"
+    },
+    "review-go-engineering-change": {
+      "url": "https://github.com/ashwingopalsamy/golangskills.com",
+      "revision": "acadc48f8ede49d9889a7e02da70fa1bfbd61b3d",
+      "package_version": "0.4.0",
+      "path": "skills/review-go-engineering-change/SKILL.md",
+      "license": "Apache-2.0",
+      "licenses": [
+        "licenses/go-Apache-2.0.txt",
+        "licenses/go-THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    "go-language-engineering": {
+      "url": "https://github.com/ashwingopalsamy/golangskills.com",
+      "revision": "acadc48f8ede49d9889a7e02da70fa1bfbd61b3d",
+      "package_version": "0.4.0",
+      "path": "skills/go-language-engineering/SKILL.md",
+      "license": "Apache-2.0",
+      "licenses": [
+        "licenses/go-Apache-2.0.txt",
+        "licenses/go-THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    "go-project-and-api-design": {
+      "url": "https://github.com/ashwingopalsamy/golangskills.com",
+      "revision": "acadc48f8ede49d9889a7e02da70fa1bfbd61b3d",
+      "package_version": "0.4.0",
+      "path": "skills/go-project-and-api-design/SKILL.md",
+      "license": "Apache-2.0",
+      "licenses": [
+        "licenses/go-Apache-2.0.txt",
+        "licenses/go-THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    "go-testing-and-verification": {
+      "url": "https://github.com/ashwingopalsamy/golangskills.com",
+      "revision": "acadc48f8ede49d9889a7e02da70fa1bfbd61b3d",
+      "package_version": "0.4.0",
+      "path": "skills/go-testing-and-verification/SKILL.md",
+      "license": "Apache-2.0",
+      "licenses": [
+        "licenses/go-Apache-2.0.txt",
+        "licenses/go-THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    "go-security-hardening": {
+      "url": "https://github.com/ashwingopalsamy/golangskills.com",
+      "revision": "acadc48f8ede49d9889a7e02da70fa1bfbd61b3d",
+      "package_version": "0.4.0",
+      "path": "skills/go-security-hardening/SKILL.md",
+      "license": "Apache-2.0",
+      "licenses": [
+        "licenses/go-Apache-2.0.txt",
+        "licenses/go-THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    "design-postgres-tables": {
+      "url": "https://github.com/timescale/pg-aiguide",
+      "ref": "5d3b76b5c986693b30753828b404aa66ba34c31a",
+      "upstreamPath": "skills/design-postgres-tables/SKILL.md",
+      "adaptation": "plainfin-2026-11-04; installed local adaptation, snapshot hashes define the shipped bytes",
+      "license": "Apache-2.0; LICENSE and NOTICE included unchanged"
+    },
+    "postgres-query-tuning": {
+      "url": "https://codexskills.dev/skills/databases/postgres-query-tuning/",
+      "ref": null,
+      "adaptation": "Installed snapshot 2026-11-04; no immutable revision supplied by this distribution",
+      "license": "MIT declared in SKILL.md; https://codexskills.dev/about/#licensing"
+    },
+    "postgres-indexing": {
+      "url": "https://codexskills.dev/skills/databases/postgres-indexing/",
+      "ref": null,
+      "adaptation": "Installed snapshot 2026-11-04; no immutable revision supplied by this distribution",
+      "license": "MIT declared in SKILL.md; https://codexskills.dev/about/#licensing"
+    },
+    "database-transactions": {
+      "url": "https://codexskills.dev/skills/databases/database-transactions/",
+      "ref": null,
+      "adaptation": "Installed snapshot 2026-11-04; no immutable revision supplied by this distribution",
+      "license": "MIT declared in SKILL.md; https://codexskills.dev/about/#licensing"
+    },
+    "postgres-database-migration": {
+      "url": "https://github.com/timescale/pg-aiguide",
+      "ref": "5d3b76b5c986693b30753828b404aa66ba34c31a",
+      "upstreamPath": "skills/postgres-database-migration/SKILL.md",
+      "adaptation": "plainfin-2026-11-04; installed local adaptation, snapshot hashes define the shipped bytes",
+      "license": "Apache-2.0; LICENSE and NOTICE included unchanged"
+    },
+    "outbox-pattern": {
+      "url": "https://codexskills.dev/skills/architecture/outbox-pattern/",
+      "ref": null,
+      "adaptation": "Installed snapshot 2026-11-04; no immutable revision supplied by this distribution",
+      "license": "MIT declared in SKILL.md; https://codexskills.dev/about/#licensing"
+    }
+  },
+  "files_sha256": {
+    "docs/review-skills/vendor/code-review-and-quality/LICENSE": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+    "docs/review-skills/vendor/code-review-and-quality/SKILL.md": "89f97f166b08f72750f706a3355d7963cee12b335068efcb4e208f768c89f0f4",
+    "docs/review-skills/vendor/code-review-and-quality/references/performance-checklist.md": "69b3fcdf5d3ae9bf8eb0fd5360c20682640d488c5f4ff9f276e3e2e69fd56883",
+    "docs/review-skills/vendor/code-review-and-quality/references/security-checklist.md": "9fe6bfa63bc598b59c5c8fdb2b2ea2dba92ab633a9ca4afd010eb78519d07474",
+    "docs/review-skills/licenses/addyosmani-MIT.txt": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+    "docs/review-skills/vendor/security-and-hardening/LICENSE": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+    "docs/review-skills/vendor/security-and-hardening/SKILL.md": "600c954bb214edc80eca849e14bfe3c6cfd8d909c5782d85f2a10307fe136736",
+    "docs/review-skills/vendor/security-and-hardening/references/hardening-patterns.md": "d4e6dfdcd2d3bc91e0ad7424362d9fb4260a2a1cb745dac76a88fb10715139f4",
+    "docs/review-skills/vendor/security-and-hardening/references/security-checklist.md": "9fe6bfa63bc598b59c5c8fdb2b2ea2dba92ab633a9ca4afd010eb78519d07474",
+    "docs/review-skills/vendor/cicd-security/SKILL.md": "5e4d82639ed3cefb8e43951fc35537addc502fb5894ade583f1217b1473c71a4",
+    "docs/review-skills/vendor/cicd-security/references/ai-agents-in-ci.md": "4eaeb1c1c5ffdb4fd365425533e35cbc9b108e8ecc2db93e67359d18098c8d45",
+    "docs/review-skills/vendor/cicd-security/references/checks.md": "1939a744e9048597f4851c9698e7ac167e8700fca941d35c21b2169ef0b56c65",
+    "docs/review-skills/vendor/cicd-security/references/findings-format.md": "0f70feb3437c8fab5b10b6d0014326d4a46a66812f8ad7d273ee633486687d40",
+    "docs/review-skills/vendor/cicd-security/references/findings.schema.json": "2f95361c80938400ee8a869d86149aadbf53b665c7cdbd140a662de8c788b77a",
+    "docs/review-skills/vendor/cicd-security/references/gitlab-circleci.md": "96ab508cdfef5dc799bec3126d59cbc2da50d49156a1009b033559bbbe56a50f",
+    "docs/review-skills/vendor/cicd-security/references/severity-calibration.md": "4c60a269d5050b9635839f9b6f792e6c37135370fae9313841f148cdd87d723d",
+    "docs/review-skills/vendor/cicd-security/references/to-sarif.mjs": "70ee7a3d056a60a15b9aebdd654a1e026377a3b19f9c760179dd21845fc0ed5e",
+    "docs/review-skills/vendor/cicd-security/references/validate-findings.mjs": "e26d295f029294905e83ab991b0618be43b0d7b36063e6f8af2c714446f26cd1",
+    "docs/review-skills/vendor/cicd-security/references/verification.md": "62062060314072a4959b8ee307813a95a76d582cccabd9c39f16d7dd2bd0c17e",
+    "docs/review-skills/vendor/cicd-security/references/worked-examples.md": "44f2e8e4f396abd4c0da2fcf08f58dc791455aba4abef9a80ed1a9d7d88dfdeb",
+    "docs/review-skills/licenses/briiirussell-MIT.txt": "951fb9d5201f7d90c61d8ef5d33c75d08bdf2dd4e47cde4760fb465969e9a44d",
+    "docs/review-skills/vendor/github-actions-validator/SKILL.md": "aa9fa15e70ef975eb14dc58f6dcf8dd671a33a585c7d77f70f87565c94d220e0",
+    "docs/review-skills/vendor/github-actions-validator/references/act_usage.md": "e084aac424e4153203ea30c6b76a435ca0ca376491fd82b4606cb29c7440b13f",
+    "docs/review-skills/vendor/github-actions-validator/references/action_versions.md": "3277b776935f2d29a620ff67fdaa233c5a844c2b6333d64a41e6afe0f119327a",
+    "docs/review-skills/vendor/github-actions-validator/references/actionlint_usage.md": "9019ecc43223200b93435422df5b530c10825e62b2a5acd6412b9ff11dcdc195",
+    "docs/review-skills/vendor/github-actions-validator/references/common_errors.md": "200256a62ec58e07221f84bb0af644e4dd775d0a15f2c1284a96afdd8fc74dbd",
+    "docs/review-skills/vendor/github-actions-validator/references/modern_features.md": "cacdf2968f73327fd9dee098d09c480d2dfe8ab85a9c53d2521cf665a73dc838",
+    "docs/review-skills/vendor/github-actions-validator/references/runners.md": "794dde89fa077e6f1e57f28635a1eec3f5321cb6ef0109a6ed1804898078fab9",
+    "docs/review-skills/vendor/github-actions-validator/scripts/install_tools.sh": "831fe16a6773e4c97b6f59132e273ebd38e97cf6cb4549f5d0b4d88e0ab794b2",
+    "docs/review-skills/vendor/github-actions-validator/scripts/validate_workflow.sh": "d1078eb9946e569376550111ba97473ea64ae70b5bea3c58d0400c01bb582e02",
+    "docs/review-skills/licenses/akin-ozer-Apache-2.0.txt": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "docs/review-skills/vendor/engineering-skills-for-go/review-go-engineering-change/SKILL.md": "e523cade289240559289bd3b4e2711fd9d98363bc6c328a18df7c32058fcca59",
+    "docs/review-skills/vendor/engineering-skills-for-go/review-go-engineering-change/references/finding-standard.md": "e5154ab49b12dfedb85d7b81279099ed8b7b6bc6f203da1b9eec88a1b2503171",
+    "docs/review-skills/licenses/go-Apache-2.0.txt": "d736057c03a6531b4916502c3c08b7de8edafe4315c87ae9143021732d6c29e8",
+    "docs/review-skills/licenses/go-THIRD_PARTY_NOTICES.md": "58f0be6638acc2510e1c8b350487cdd7310923b12c74bc1e3e600593d32f50bf",
+    "docs/review-skills/vendor/engineering-skills-for-go/go-language-engineering/SKILL.md": "ec2bacdbb4058713a9ad21525577ebfa728e565a7317daa7eccc0a1d55e5dd1a",
+    "docs/review-skills/vendor/engineering-skills-for-go/go-language-engineering/references/decision-record.md": "9f5c59c4249d981db4ce3bfec6923f4496e80859d66f7fa61466a8e01f37fd2a",
+    "docs/review-skills/vendor/engineering-skills-for-go/go-language-engineering/references/memory-ownership-and-aliasing.md": "0a4c0b6eeabb18c32b2d22567bdea93dbe44485a2620a0585d312868368e583b",
+    "docs/review-skills/vendor/engineering-skills-for-go/go-project-and-api-design/SKILL.md": "ac3f5c0735095a126c2f1e4c7036863c1cc6000c56967d11e49b296db4bb7caf",
+    "docs/review-skills/vendor/engineering-skills-for-go/go-project-and-api-design/references/api-evolution.md": "ed727535a1302e9effd124378aea7ad6eb0813709080415c25fcd94d09ac2a3a",
+    "docs/review-skills/vendor/engineering-skills-for-go/go-project-and-api-design/references/module-release-compatibility.md": "c82eb3c226d3b3a9358042ad4b478ed5dd65e7d594110ca1b8854fe791801176",
+    "docs/review-skills/vendor/engineering-skills-for-go/go-testing-and-verification/SKILL.md": "45b515646418e3ba9b1f8646c13f8373e9d0b0c632a1f0d1e8669db1621d5261",
+    "docs/review-skills/vendor/engineering-skills-for-go/go-testing-and-verification/references/deterministic-concurrency.md": "298275967fb9805d63719ad11a007b66a85a4540091e7cd7660dffb9b6c3dad8",
+    "docs/review-skills/vendor/engineering-skills-for-go/go-testing-and-verification/references/oracle-design.md": "bf86829f4423be4163fe71b206ca300d6382eb8274e90d3e8b302d51b78d5f0a",
+    "docs/review-skills/vendor/engineering-skills-for-go/go-security-hardening/SKILL.md": "245ad4e781216e4e5464f2cc467152763091d2ad47483a08036f44a72896d3cc",
+    "docs/review-skills/vendor/engineering-skills-for-go/go-security-hardening/references/dependency-integrity.md": "22a224357765c15c83672ec273c41593a095d9c6e8c5ac53aaf82333ff7a895f",
+    "docs/review-skills/vendor/engineering-skills-for-go/go-security-hardening/references/envelope-encryption-lifecycle.md": "04d720c26c53a2cad88b2d60dc77b5fdff46027baa8e62d502a5e722b75e8e6d",
+    "docs/review-skills/vendor/engineering-skills-for-go/go-security-hardening/references/process-execution-boundary.md": "108070fc5f67ad0513fe0c7ba5cac8660b67e44128a452c0998adca896755f02",
+    "docs/review-skills/vendor/engineering-skills-for-go/go-security-hardening/references/threat-paths.md": "15184374553a14df9b365d0b3fdfead87a961453bf3a36194209d07bd7b882bd",
+    "docs/review-skills/vendor/engineering-skills-for-go/go-security-hardening/references/trusted-proxy-identity.md": "de30d0877092fd14aec325941ded7cf6d89f58f35d2483f296ad00d17153f294",
+    "docs/review-skills/vendor/design-postgres-tables/LICENSE": "5c272e206669b79ee20fa89fa8fa888d5b56186f16c55a5614753ad3412e2ae9",
+    "docs/review-skills/vendor/design-postgres-tables/NOTICE": "505ea3e3e023dcc469adaf6134a6d166bc91b18e3a7565665e65bec96f6ef02d",
+    "docs/review-skills/vendor/design-postgres-tables/SKILL.md": "eacffbaa9a2497fc04d28a1322b63e3d867a00f0b4b351de9ab0b76e0326b08e",
+    "docs/review-skills/vendor/postgres-query-tuning/SKILL.md": "f9f2cdb92f646b1273d970a9be5bede9fe00cead0837028ffbe2e32c2ecce8c8",
+    "docs/review-skills/licenses/codexskills-MIT.txt": "7efd81f829a3516f5eb48ca98900cc594f9abd6c6280c92f31cb794e82919512",
+    "docs/review-skills/vendor/postgres-indexing/SKILL.md": "4bcedddbdcaf173369f86dec0b7e272055a99bb1f277497d99ec6a124dcd836a",
+    "docs/review-skills/vendor/database-transactions/SKILL.md": "385eb6a8957a80a7181449fc46bbf0cb1ac4120be84a2b333ca25a13024e8c24",
+    "docs/review-skills/vendor/postgres-database-migration/LICENSE": "5c272e206669b79ee20fa89fa8fa888d5b56186f16c55a5614753ad3412e2ae9",
+    "docs/review-skills/vendor/postgres-database-migration/NOTICE": "505ea3e3e023dcc469adaf6134a6d166bc91b18e3a7565665e65bec96f6ef02d",
+    "docs/review-skills/vendor/postgres-database-migration/SKILL.md": "263abea575820f2a4f0df161a45c8347f1a780af0a6a4aeade0882d46678f604",
+    "docs/review-skills/vendor/postgres-database-migration/references/backfill-strategies.md": "4f8cd5071023e738a7ea00f078520db97c6d5854601a35ebce7f7d1b75cb01b4",
+    "docs/review-skills/vendor/postgres-database-migration/references/complete-example.md": "14f6f787ab699f87acac1536652d7ad33e5cbe95aa2420529b36c8bde3ffa857",
+    "docs/review-skills/vendor/postgres-database-migration/references/validation-queries.md": "91634bde0ab0f089e907bd7c893352957b26a7b536df9be8d952c48c44f6c434",
+    "docs/review-skills/vendor/outbox-pattern/SKILL.md": "6fbb0a25f4a83d945c753fa76a95202d5bf9d6c2bb4d2f339e54e3888d8a57a2"
+  }
+}
