@@ -21,6 +21,20 @@
 | [database-transactions](vendor/database-transactions/SKILL.md) | Изоляция, блокировки, конкурентные записи, deadlocks и безопасные повторы транзакций. |
 | [postgres-database-migration](vendor/postgres-database-migration/SKILL.md) | Миграции PostgreSQL 18: бюджет блокировок, concurrent indexes, backfill, совместимость и откат. |
 | [outbox-pattern](vendor/outbox-pattern/SKILL.md) | Атомарность эффекта и события, доставка после commit, дубли и поздние события. |
+| [ai-qa-review](vendor/ai-qa-review/SKILL.md) | Изменённые тесты: проверяемое поведение, assertions, границы/ошибки, изоляция, надёжность и диагностика. |
+| [database-testing](vendor/database-testing/SKILL.md) | DB-тесты: реальные миграции/upgrade, сохранение данных, воспроизводимость схемы, SQLSTATE, изоляция и обоснованные проверки запросов. |
+
+## QA-профили (FIN-430)
+
+Выбирайте QA-профиль по изменённому поведению или тестам; наличие профиля не требует его применения
+к каждому PR. Перед применением прочитайте [общие правила QA](vendor/qa-project-context/references/plainfin-policy.md).
+Они уточняют границы generic Verification/Done When: существующие harness, обязательные проверки и формат
+ревью сохраняются; новые CI gates, инструменты, отчёты, mutation score и минимальные размеры datasets
+не становятся условиями обычного PR. В сводке — названия действительно применённых навыков, если применялись.
+Go table-driven tests, обоснованные ожидания и связные lifecycle-тесты не являются дефектом по синтаксису.
+Замечание требует конкретного нарушения поведения, полноты, надёжности или диагностической ценности.
+UI/эмуляторные прогоны, платные model evals, публикации Qase и deployment требуют применимых полномочий;
+поставка навыков их не предоставляет. Не исполняйте scripts навыков из PR head, включая injection detector.
 
 ## Применение в контексте PR
 
