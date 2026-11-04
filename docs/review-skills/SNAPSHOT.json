@@ -13,9 +13,24 @@
       ],
       "license": "MIT",
       "licenses": [
-        "licenses/addyosmani-MIT.txt"
+        "licenses/addyosmani-MIT.txt",
+        "licenses/engineering-suite-MIT.txt"
       ],
-      "snapshot": "2026-11-04"
+      "snapshot": "2026-11-04",
+      "intermediary": {
+        "package": "engineering-suite@openai-curated-remote",
+        "version": "1.1.1",
+        "basis": "Preserved references identify this intermediary; attribution is retained without inferring authorship of every difference from Addy upstream. The package is no longer installed locally.",
+        "license": "MIT",
+        "licenses": [
+          "licenses/engineering-suite-MIT.txt"
+        ],
+        "notice_source": {
+          "url": "https://github.com/fin-assist/go-service-template/blob/77491fb876eb124fd9c085deb24a9ff9432e4514/docs/review-skills/licenses/MIT.txt",
+          "git_blob_sha": "79d4137f6a9773b62dbe6375f88099a3c5246fa9",
+          "sha256": "cf528a33542cc035fc8063e7e924505d4b8464f4361d9ef18f6728918594254f"
+        }
+      }
     },
     "security-and-hardening": {
       "url": "https://github.com/addyosmani/agent-skills",
@@ -28,9 +43,24 @@
       ],
       "license": "MIT",
       "licenses": [
-        "licenses/addyosmani-MIT.txt"
+        "licenses/addyosmani-MIT.txt",
+        "licenses/engineering-suite-MIT.txt"
       ],
-      "snapshot": "2026-11-04"
+      "snapshot": "2026-11-04",
+      "intermediary": {
+        "package": "engineering-suite@openai-curated-remote",
+        "version": "1.1.1",
+        "basis": "Preserved references identify this intermediary; attribution is retained without inferring authorship of every difference from Addy upstream. The package is no longer installed locally.",
+        "license": "MIT",
+        "licenses": [
+          "licenses/engineering-suite-MIT.txt"
+        ],
+        "notice_source": {
+          "url": "https://github.com/fin-assist/go-service-template/blob/77491fb876eb124fd9c085deb24a9ff9432e4514/docs/review-skills/licenses/MIT.txt",
+          "git_blob_sha": "79d4137f6a9773b62dbe6375f88099a3c5246fa9",
+          "sha256": "cf528a33542cc035fc8063e7e924505d4b8464f4361d9ef18f6728918594254f"
+        }
+      }
     },
     "cicd-security": {
       "url": "https://github.com/briiirussell/cybersecurity-skills",
@@ -174,6 +204,7 @@
     "docs/review-skills/vendor/code-review-and-quality/references/performance-checklist.md": "69b3fcdf5d3ae9bf8eb0fd5360c20682640d488c5f4ff9f276e3e2e69fd56883",
     "docs/review-skills/vendor/code-review-and-quality/references/security-checklist.md": "9fe6bfa63bc598b59c5c8fdb2b2ea2dba92ab633a9ca4afd010eb78519d07474",
     "docs/review-skills/licenses/addyosmani-MIT.txt": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+    "docs/review-skills/licenses/engineering-suite-MIT.txt": "cf528a33542cc035fc8063e7e924505d4b8464f4361d9ef18f6728918594254f",
     "docs/review-skills/vendor/security-and-hardening/LICENSE": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
     "docs/review-skills/vendor/security-and-hardening/SKILL.md": "600c954bb214edc80eca849e14bfe3c6cfd8d909c5782d85f2a10307fe136736",
     "docs/review-skills/vendor/security-and-hardening/references/hardening-patterns.md": "d4e6dfdcd2d3bc91e0ad7424362d9fb4260a2a1cb745dac76a88fb10715139f4",
