@@ -1,5 +1,5 @@
 {
-  "revision": "c144e79f545ecd819762056087cadfa615684051",
+  "revision": "20ca51b80f65447d83934b07746b2c1c2a72873f",
   "profile": "library",
   "gosec_g115": true,
   "squawk_smallint": false
