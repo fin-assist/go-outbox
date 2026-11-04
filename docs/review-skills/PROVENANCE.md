@@ -6,27 +6,30 @@
 не выдаются за неизменённый upstream. Полные SHA256 всех поставленных исходников и лицензий — в [SNAPSHOT.json](SNAPSHOT.json).
 
 | Навык | Источник / ревизия сравнения | Лицензия |
-| --- | --- |
-| code-review-and-quality | [https://github.com/addyosmani/agent-skills](https://github.com/addyosmani/agent-skills); `301b02b12bff98e4688e6984af6556802322bbde` | MIT |
-| security-and-hardening | [https://github.com/addyosmani/agent-skills](https://github.com/addyosmani/agent-skills); `301b02b12bff98e4688e6984af6556802322bbde` | MIT |
-| cicd-security | [https://github.com/briiirussell/cybersecurity-skills](https://github.com/briiirussell/cybersecurity-skills); `18642b272e9fe57ed6bdf3fd96614915e8a4d71d` | MIT |
-| github-actions-validator | [https://github.com/akin-ozer/cc-devops-skills](https://github.com/akin-ozer/cc-devops-skills); `276af751e659315aaf56d3ad13d7c26f4e72e28a` | Apache-2.0 |
-| review-go-engineering-change | [https://github.com/ashwingopalsamy/golangskills.com](https://github.com/ashwingopalsamy/golangskills.com); `acadc48f8ede49d9889a7e02da70fa1bfbd61b3d` | Apache-2.0 |
-| go-language-engineering | [https://github.com/ashwingopalsamy/golangskills.com](https://github.com/ashwingopalsamy/golangskills.com); `acadc48f8ede49d9889a7e02da70fa1bfbd61b3d` | Apache-2.0 |
-| go-project-and-api-design | [https://github.com/ashwingopalsamy/golangskills.com](https://github.com/ashwingopalsamy/golangskills.com); `acadc48f8ede49d9889a7e02da70fa1bfbd61b3d` | Apache-2.0 |
-| go-testing-and-verification | [https://github.com/ashwingopalsamy/golangskills.com](https://github.com/ashwingopalsamy/golangskills.com); `acadc48f8ede49d9889a7e02da70fa1bfbd61b3d` | Apache-2.0 |
-| go-security-hardening | [https://github.com/ashwingopalsamy/golangskills.com](https://github.com/ashwingopalsamy/golangskills.com); `acadc48f8ede49d9889a7e02da70fa1bfbd61b3d` | Apache-2.0 |
-| design-postgres-tables | [https://github.com/timescale/pg-aiguide](https://github.com/timescale/pg-aiguide); `5d3b76b5c986693b30753828b404aa66ba34c31a` | Apache-2.0; LICENSE and NOTICE included unchanged |
-| postgres-query-tuning | [https://codexskills.dev/skills/databases/postgres-query-tuning/](https://codexskills.dev/skills/databases/postgres-query-tuning/); `снимок без immutable revision` | MIT declared in SKILL.md; https://codexskills.dev/about/#licensing |
-| postgres-indexing | [https://codexskills.dev/skills/databases/postgres-indexing/](https://codexskills.dev/skills/databases/postgres-indexing/); `снимок без immutable revision` | MIT declared in SKILL.md; https://codexskills.dev/about/#licensing |
-| database-transactions | [https://codexskills.dev/skills/databases/database-transactions/](https://codexskills.dev/skills/databases/database-transactions/); `снимок без immutable revision` | MIT declared in SKILL.md; https://codexskills.dev/about/#licensing |
-| postgres-database-migration | [https://github.com/timescale/pg-aiguide](https://github.com/timescale/pg-aiguide); `5d3b76b5c986693b30753828b404aa66ba34c31a` | Apache-2.0; LICENSE and NOTICE included unchanged |
-| outbox-pattern | [https://codexskills.dev/skills/architecture/outbox-pattern/](https://codexskills.dev/skills/architecture/outbox-pattern/); `снимок без immutable revision` | MIT declared in SKILL.md; https://codexskills.dev/about/#licensing |
+| --- | --- | --- |
+| code-review-and-quality | [https://github.com/addyosmani/agent-skills](https://github.com/addyosmani/agent-skills); `301b02b12bff98e4688e6984af6556802322bbde` | MIT; [addyosmani-MIT.txt](licenses/addyosmani-MIT.txt) |
+| security-and-hardening | [https://github.com/addyosmani/agent-skills](https://github.com/addyosmani/agent-skills); `301b02b12bff98e4688e6984af6556802322bbde` | MIT; [addyosmani-MIT.txt](licenses/addyosmani-MIT.txt) |
+| cicd-security | [https://github.com/briiirussell/cybersecurity-skills](https://github.com/briiirussell/cybersecurity-skills); `18642b272e9fe57ed6bdf3fd96614915e8a4d71d` | MIT; [briiirussell-MIT.txt](licenses/briiirussell-MIT.txt) |
+| github-actions-validator | [https://github.com/akin-ozer/cc-devops-skills](https://github.com/akin-ozer/cc-devops-skills); `276af751e659315aaf56d3ad13d7c26f4e72e28a` | Apache-2.0; [akin-ozer-Apache-2.0.txt](licenses/akin-ozer-Apache-2.0.txt) |
+| review-go-engineering-change | [https://github.com/ashwingopalsamy/golangskills.com](https://github.com/ashwingopalsamy/golangskills.com); `acadc48f8ede49d9889a7e02da70fa1bfbd61b3d` | Apache-2.0; [go-Apache-2.0.txt](licenses/go-Apache-2.0.txt); [go-THIRD_PARTY_NOTICES.md](licenses/go-THIRD_PARTY_NOTICES.md) |
+| go-language-engineering | [https://github.com/ashwingopalsamy/golangskills.com](https://github.com/ashwingopalsamy/golangskills.com); `acadc48f8ede49d9889a7e02da70fa1bfbd61b3d` | Apache-2.0; [go-Apache-2.0.txt](licenses/go-Apache-2.0.txt); [go-THIRD_PARTY_NOTICES.md](licenses/go-THIRD_PARTY_NOTICES.md) |
+| go-project-and-api-design | [https://github.com/ashwingopalsamy/golangskills.com](https://github.com/ashwingopalsamy/golangskills.com); `acadc48f8ede49d9889a7e02da70fa1bfbd61b3d` | Apache-2.0; [go-Apache-2.0.txt](licenses/go-Apache-2.0.txt); [go-THIRD_PARTY_NOTICES.md](licenses/go-THIRD_PARTY_NOTICES.md) |
+| go-testing-and-verification | [https://github.com/ashwingopalsamy/golangskills.com](https://github.com/ashwingopalsamy/golangskills.com); `acadc48f8ede49d9889a7e02da70fa1bfbd61b3d` | Apache-2.0; [go-Apache-2.0.txt](licenses/go-Apache-2.0.txt); [go-THIRD_PARTY_NOTICES.md](licenses/go-THIRD_PARTY_NOTICES.md) |
+| go-security-hardening | [https://github.com/ashwingopalsamy/golangskills.com](https://github.com/ashwingopalsamy/golangskills.com); `acadc48f8ede49d9889a7e02da70fa1bfbd61b3d` | Apache-2.0; [go-Apache-2.0.txt](licenses/go-Apache-2.0.txt); [go-THIRD_PARTY_NOTICES.md](licenses/go-THIRD_PARTY_NOTICES.md) |
+| design-postgres-tables | [https://github.com/timescale/pg-aiguide](https://github.com/timescale/pg-aiguide); `5d3b76b5c986693b30753828b404aa66ba34c31a` | Apache-2.0; LICENSE and NOTICE included unchanged; [LICENSE](vendor/design-postgres-tables/LICENSE); [NOTICE](vendor/design-postgres-tables/NOTICE) |
+| postgres-query-tuning | [https://codexskills.dev/skills/databases/postgres-query-tuning/](https://codexskills.dev/skills/databases/postgres-query-tuning/); `снимок без immutable revision` | MIT declared in SKILL.md; https://codexskills.dev/about/#licensing; [codexskills-MIT.txt](licenses/codexskills-MIT.txt) |
+| postgres-indexing | [https://codexskills.dev/skills/databases/postgres-indexing/](https://codexskills.dev/skills/databases/postgres-indexing/); `снимок без immutable revision` | MIT declared in SKILL.md; https://codexskills.dev/about/#licensing; [codexskills-MIT.txt](licenses/codexskills-MIT.txt) |
+| database-transactions | [https://codexskills.dev/skills/databases/database-transactions/](https://codexskills.dev/skills/databases/database-transactions/); `снимок без immutable revision` | MIT declared in SKILL.md; https://codexskills.dev/about/#licensing; [codexskills-MIT.txt](licenses/codexskills-MIT.txt) |
+| postgres-database-migration | [https://github.com/timescale/pg-aiguide](https://github.com/timescale/pg-aiguide); `5d3b76b5c986693b30753828b404aa66ba34c31a` | Apache-2.0; LICENSE and NOTICE included unchanged; [LICENSE](vendor/postgres-database-migration/LICENSE); [NOTICE](vendor/postgres-database-migration/NOTICE) |
+| outbox-pattern | [https://codexskills.dev/skills/architecture/outbox-pattern/](https://codexskills.dev/skills/architecture/outbox-pattern/); `снимок без immutable revision` | MIT declared in SKILL.md; https://codexskills.dev/about/#licensing; [codexskills-MIT.txt](licenses/codexskills-MIT.txt) |
 
-У Codex Skills исходные SKILL.md содержат объявление MIT; отдельная copyright-строка в дистрибутиве отсутствует.
-Разрешение распространения подтверждено [условиями источника](https://codexskills.dev/about/#licensing); при наличии
-этих материалов сохранено отдельное уведомление с текстом MIT. Для остальных источников поставлены исходные
-LICENSE/NOTICE либо закреплённая лицензия автора; их пути также перечислены в SNAPSHOT.json.
+У поставленных навыков Codex Skills исходные SKILL.md содержат объявление MIT; отдельная copyright-строка
+в дистрибутиве отсутствует. Разрешение распространения подтверждено [условиями источника](https://codexskills.dev/about/#licensing).
+Сохранено [отдельное уведомление с текстом MIT](licenses/codexskills-MIT.txt); связь каждого навыка с ним указана
+в поле `licenses` SNAPSHOT.json и в таблице выше.
+
+Для источников GitHub поставлены исходные LICENSE/NOTICE либо закреплённая лицензия автора; прямые ссылки
+приведены в таблице, а связь каждого навыка с файлами лицензий — в поле `licenses` SNAPSHOT.json.
 
 Ссылка `research/corpus-lock.json` в неизменённом go-THIRD_PARTY_NOTICES.md относится к исследовательскому
 корпусу upstream, а не к локальной процедуре навыка. Корпус не поставляется; закреплённый источник:

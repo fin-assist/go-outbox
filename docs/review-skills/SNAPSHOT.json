@@ -114,38 +114,58 @@
       "ref": "5d3b76b5c986693b30753828b404aa66ba34c31a",
       "upstreamPath": "skills/design-postgres-tables/SKILL.md",
       "adaptation": "plainfin-2026-11-04; installed local adaptation, snapshot hashes define the shipped bytes",
-      "license": "Apache-2.0; LICENSE and NOTICE included unchanged"
+      "license": "Apache-2.0; LICENSE and NOTICE included unchanged",
+      "licenses": [
+        "vendor/design-postgres-tables/LICENSE",
+        "vendor/design-postgres-tables/NOTICE"
+      ]
     },
     "postgres-query-tuning": {
       "url": "https://codexskills.dev/skills/databases/postgres-query-tuning/",
       "ref": null,
       "adaptation": "Installed snapshot 2026-11-04; no immutable revision supplied by this distribution",
-      "license": "MIT declared in SKILL.md; https://codexskills.dev/about/#licensing"
+      "license": "MIT declared in SKILL.md; https://codexskills.dev/about/#licensing",
+      "licenses": [
+        "licenses/codexskills-MIT.txt"
+      ]
     },
     "postgres-indexing": {
       "url": "https://codexskills.dev/skills/databases/postgres-indexing/",
       "ref": null,
       "adaptation": "Installed snapshot 2026-11-04; no immutable revision supplied by this distribution",
-      "license": "MIT declared in SKILL.md; https://codexskills.dev/about/#licensing"
+      "license": "MIT declared in SKILL.md; https://codexskills.dev/about/#licensing",
+      "licenses": [
+        "licenses/codexskills-MIT.txt"
+      ]
     },
     "database-transactions": {
       "url": "https://codexskills.dev/skills/databases/database-transactions/",
       "ref": null,
       "adaptation": "Installed snapshot 2026-11-04; no immutable revision supplied by this distribution",
-      "license": "MIT declared in SKILL.md; https://codexskills.dev/about/#licensing"
+      "license": "MIT declared in SKILL.md; https://codexskills.dev/about/#licensing",
+      "licenses": [
+        "licenses/codexskills-MIT.txt"
+      ]
     },
     "postgres-database-migration": {
       "url": "https://github.com/timescale/pg-aiguide",
       "ref": "5d3b76b5c986693b30753828b404aa66ba34c31a",
       "upstreamPath": "skills/postgres-database-migration/SKILL.md",
       "adaptation": "plainfin-2026-11-04; installed local adaptation, snapshot hashes define the shipped bytes",
-      "license": "Apache-2.0; LICENSE and NOTICE included unchanged"
+      "license": "Apache-2.0; LICENSE and NOTICE included unchanged",
+      "licenses": [
+        "vendor/postgres-database-migration/LICENSE",
+        "vendor/postgres-database-migration/NOTICE"
+      ]
     },
     "outbox-pattern": {
       "url": "https://codexskills.dev/skills/architecture/outbox-pattern/",
       "ref": null,
       "adaptation": "Installed snapshot 2026-11-04; no immutable revision supplied by this distribution",
-      "license": "MIT declared in SKILL.md; https://codexskills.dev/about/#licensing"
+      "license": "MIT declared in SKILL.md; https://codexskills.dev/about/#licensing",
+      "licenses": [
+        "licenses/codexskills-MIT.txt"
+      ]
     }
   },
   "files_sha256": {
@@ -182,8 +202,8 @@
     "docs/review-skills/licenses/akin-ozer-Apache-2.0.txt": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
     "docs/review-skills/vendor/engineering-skills-for-go/review-go-engineering-change/SKILL.md": "e523cade289240559289bd3b4e2711fd9d98363bc6c328a18df7c32058fcca59",
     "docs/review-skills/vendor/engineering-skills-for-go/review-go-engineering-change/references/finding-standard.md": "e5154ab49b12dfedb85d7b81279099ed8b7b6bc6f203da1b9eec88a1b2503171",
-    "docs/review-skills/licenses/go-Apache-2.0.txt": "d736057c03a6531b4916502c3c08b7de8edafe4315c87ae9143021732d6c29e8",
-    "docs/review-skills/licenses/go-THIRD_PARTY_NOTICES.md": "58f0be6638acc2510e1c8b350487cdd7310923b12c74bc1e3e600593d32f50bf",
+    "docs/review-skills/licenses/go-Apache-2.0.txt": "cfcbcc1445506ef418c51e5c5a412deee7c088ce3d878a380c8a289393392b5e",
+    "docs/review-skills/licenses/go-THIRD_PARTY_NOTICES.md": "b623569fa1faab204b26f003fa3895945fd6da06018d12ae420dae5248106cda",
     "docs/review-skills/vendor/engineering-skills-for-go/go-language-engineering/SKILL.md": "ec2bacdbb4058713a9ad21525577ebfa728e565a7317daa7eccc0a1d55e5dd1a",
     "docs/review-skills/vendor/engineering-skills-for-go/go-language-engineering/references/decision-record.md": "9f5c59c4249d981db4ce3bfec6923f4496e80859d66f7fa61466a8e01f37fd2a",
     "docs/review-skills/vendor/engineering-skills-for-go/go-language-engineering/references/memory-ownership-and-aliasing.md": "0a4c0b6eeabb18c32b2d22567bdea93dbe44485a2620a0585d312868368e583b",
