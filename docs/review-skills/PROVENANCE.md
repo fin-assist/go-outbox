@@ -1,7 +1,7 @@
 # Источники и лицензии навыков
 
-Снимок установленных существующих навыков — 04.11.2026. Исходные SKILL.md и используемые вспомогательные
-файлы скопированы без изменений из установленного набора; проектные правила применения находятся в README.
+Снимок установленных существующих навыков — 04.11.2026. Материалы взяты из установленного набора; исходные и адаптированные
+файлы различаются по provenance и хешам снимка. Проектные правила применения находятся в README.
 Ревизия upstream и локально адаптированный снимок различаются: local_differences/adaptation в SNAPSHOT.json
 не выдаются за неизменённый upstream. Полные SHA256 всех поставленных исходников и лицензий — в [SNAPSHOT.json](SNAPSHOT.json).
 
@@ -39,3 +39,21 @@
 Ссылка `research/corpus-lock.json` в неизменённом go-THIRD_PARTY_NOTICES.md относится к исследовательскому
 корпусу upstream, а не к локальной процедуре навыка. Корпус не поставляется; закреплённый источник:
 [corpus-lock.json](https://github.com/ashwingopalsamy/golangskills.com/blob/acadc48f8ede49d9889a7e02da70fa1bfbd61b3d/research/corpus-lock.json).
+
+
+## QA-навыки FIN-430
+
+Источник: [petrkindlmann/qa-skills](https://github.com/petrkindlmann/qa-skills), upstream comparison revision
+`62434253c2592f27b494609c27f224939c86346d`. Это установленный адаптированный снимок Plainfin,
+а не заявление о побайтовом совпадении с upstream. Copyright (c) 2026 Petr Kindlmann, MIT.
+
+- `ai-qa-review`: [MIT LICENSE](vendor/ai-qa-review/LICENSE); [SKILL.md](vendor/ai-qa-review/SKILL.md) и используемые ресурсы.
+- `database-testing`: [MIT LICENSE](vendor/database-testing/LICENSE); [SKILL.md](vendor/database-testing/SKILL.md) и используемые ресурсы.
+- `qa-project-context`: [MIT LICENSE](vendor/qa-project-context/LICENSE); поставлен только общий reference policy, без SKILL.md/роутера.
+
+Адаптации FIN-430: переносимые ссылки, приоритет правил репозитория и формата ревью,
+отсутствие новых полномочий/CI gates из generic примеров. Исправления database-testing, если он поставлен:
+реальный Go/PG harness, сохранение данных и применимый recovery, разрешённые constraints/SQLSTATE,
+репрезентативная оценка полного плана без запрета Seq Scan или обязательного DROP INDEX.
+Исходные хеши файлов установленного снимка и отличающиеся файлы записаны в skills;
+files_sha256 фиксирует конечные поставленные файлы. Исходные лицензии сохранены.

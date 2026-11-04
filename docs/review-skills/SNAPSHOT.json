@@ -196,6 +196,73 @@
       "licenses": [
         "licenses/codexskills-MIT.txt"
       ]
+    },
+    "ai-qa-review": {
+      "url": "https://github.com/petrkindlmann/qa-skills",
+      "comparison_revision": "62434253c2592f27b494609c27f224939c86346d",
+      "path": "skills/ai-qa-review",
+      "license": "MIT",
+      "licenses": [
+        "vendor/ai-qa-review/LICENSE"
+      ],
+      "snapshot": "2026-11-04",
+      "source_files_sha256": {
+        "LICENSE": "52fd5fda33c7713213a16fdf77aa2d34718cebfce8d5dfc29acae10a06f8111b",
+        "SKILL.md": "3fad5b486c4ed502a3901368b92a3b8515a283bbba866328dbf777be9e232de5",
+        "references/mutation-testing.md": "2b97746b5355802ceec2fb61d1b98c3824a6e70186d176f6715f666a451a292b",
+        "references/smell-examples.md": "ad8dc09fe9ed2eb1568f710243232cd9d94b01a3bb6dbead062f6c21d6c96590",
+        "references/testability-refactors.md": "7b6291ae889e70ef760fc2f159a4fc9edd02ddd149f0f90dcd9eeefff4d239e2"
+      },
+      "local_differences": [
+        "SKILL.md",
+        "references/mutation-testing.md"
+      ],
+      "adaptation": "Installed Plainfin snapshot plus portable review integration, paths and precedence of repository rules; no new permissions or gates.",
+      "source_basis": "Installed adapted snapshot; comparison revision is provenance, not a claim of byte equality to upstream."
+    },
+    "database-testing": {
+      "url": "https://github.com/petrkindlmann/qa-skills",
+      "comparison_revision": "62434253c2592f27b494609c27f224939c86346d",
+      "path": "skills/database-testing",
+      "license": "MIT",
+      "licenses": [
+        "vendor/database-testing/LICENSE"
+      ],
+      "snapshot": "2026-11-04",
+      "source_files_sha256": {
+        "LICENSE": "52fd5fda33c7713213a16fdf77aa2d34718cebfce8d5dfc29acae10a06f8111b",
+        "SKILL.md": "95fadff25c118b932bf29f564683be508470c5b47feae1c193d920a418874be4",
+        "references/integrity-and-seed.md": "d84a22c63aa460f88f3406f16283dd0a3dc99eb526b1b9ccf4a8aed073ad8b06",
+        "references/migration-tests.md": "995fd86d0e0228e764102289bc36468b9315017f866e15e5ec7f4087aa05476e",
+        "references/performance-and-docker.md": "b592305f2033642922c7d2df30f5329b2639def7581342c3300f80ed1ef0c513"
+      },
+      "local_differences": [
+        "SKILL.md",
+        "references/integrity-and-seed.md",
+        "references/migration-tests.md",
+        "references/performance-and-docker.md"
+      ],
+      "adaptation": "Installed Plainfin snapshot plus FIN-430 corrections for actual Go/PostgreSQL harness, data preservation, permitted constraints and contextual plans; portable review policy.",
+      "source_basis": "Installed adapted snapshot; comparison revision is provenance, not a claim of byte equality to upstream."
+    },
+    "qa-project-context": {
+      "url": "https://github.com/petrkindlmann/qa-skills",
+      "comparison_revision": "62434253c2592f27b494609c27f224939c86346d",
+      "path": "skills/qa-project-context",
+      "license": "MIT",
+      "licenses": [
+        "vendor/qa-project-context/LICENSE"
+      ],
+      "snapshot": "2026-11-04",
+      "source_files_sha256": {
+        "LICENSE": "52fd5fda33c7713213a16fdf77aa2d34718cebfce8d5dfc29acae10a06f8111b",
+        "references/plainfin-policy.md": "3cf26e562a4d36f3c0d3b23e256df7169129c020ab22c1e939014e5319d96dd4"
+      },
+      "local_differences": [
+        "references/plainfin-policy.md"
+      ],
+      "adaptation": "Installed Plainfin snapshot plus portable review integration, paths and precedence of repository rules; no new permissions or gates.",
+      "source_basis": "Installed adapted snapshot; comparison revision is provenance, not a claim of byte equality to upstream."
     }
   },
   "files_sha256": {
@@ -263,6 +330,18 @@
     "docs/review-skills/vendor/postgres-database-migration/references/backfill-strategies.md": "4f8cd5071023e738a7ea00f078520db97c6d5854601a35ebce7f7d1b75cb01b4",
     "docs/review-skills/vendor/postgres-database-migration/references/complete-example.md": "14f6f787ab699f87acac1536652d7ad33e5cbe95aa2420529b36c8bde3ffa857",
     "docs/review-skills/vendor/postgres-database-migration/references/validation-queries.md": "91634bde0ab0f089e907bd7c893352957b26a7b536df9be8d952c48c44f6c434",
-    "docs/review-skills/vendor/outbox-pattern/SKILL.md": "6fbb0a25f4a83d945c753fa76a95202d5bf9d6c2bb4d2f339e54e3888d8a57a2"
+    "docs/review-skills/vendor/outbox-pattern/SKILL.md": "6fbb0a25f4a83d945c753fa76a95202d5bf9d6c2bb4d2f339e54e3888d8a57a2",
+    "docs/review-skills/vendor/ai-qa-review/LICENSE": "52fd5fda33c7713213a16fdf77aa2d34718cebfce8d5dfc29acae10a06f8111b",
+    "docs/review-skills/vendor/ai-qa-review/SKILL.md": "19f37bc0e4689c3637ac0ba3feb5b3403a7fbbbbc40226a54bfcd216b16bd493",
+    "docs/review-skills/vendor/ai-qa-review/references/mutation-testing.md": "de6edfcc101af6121036e0dc4370c0f08c7bc46f992f778e356edd49bc9ecd27",
+    "docs/review-skills/vendor/ai-qa-review/references/smell-examples.md": "ad8dc09fe9ed2eb1568f710243232cd9d94b01a3bb6dbead062f6c21d6c96590",
+    "docs/review-skills/vendor/ai-qa-review/references/testability-refactors.md": "7b6291ae889e70ef760fc2f159a4fc9edd02ddd149f0f90dcd9eeefff4d239e2",
+    "docs/review-skills/vendor/database-testing/LICENSE": "52fd5fda33c7713213a16fdf77aa2d34718cebfce8d5dfc29acae10a06f8111b",
+    "docs/review-skills/vendor/database-testing/SKILL.md": "c919711785143887fb8ef3fb0800c66c945b0ac75d649a50d5171e5118075c68",
+    "docs/review-skills/vendor/database-testing/references/integrity-and-seed.md": "e15effd3b6967ca25a79b6047944065ab1edb23f42bbfe7654dc70f23625ff54",
+    "docs/review-skills/vendor/database-testing/references/migration-tests.md": "55d7d0757781e8b5ec9f0a95e4e84b7959c96f4994e7ae94b37a1f17621d8425",
+    "docs/review-skills/vendor/database-testing/references/performance-and-docker.md": "f46eadd94906439223a24b56c6fc371ece3ca3ce9eabfbde8be8d6d6de7909e1",
+    "docs/review-skills/vendor/qa-project-context/LICENSE": "52fd5fda33c7713213a16fdf77aa2d34718cebfce8d5dfc29acae10a06f8111b",
+    "docs/review-skills/vendor/qa-project-context/references/plainfin-policy.md": "31d132472a9e05f388c269cae31b797f2086084e7b0eb91cf04ee583bc0d2c34"
   }
 }
