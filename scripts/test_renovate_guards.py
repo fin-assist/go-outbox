@@ -141,6 +141,33 @@ class ConflictLifecycleTests(unittest.TestCase):
                 self.assertEqual(api.policy, policy)
                 self.assertEqual(api.pr['state'], 'open')
 
+    def test_conflict_during_policy_read_blocks_quarantine_before_policy_write(self):
+        for mergeable, state in ((False, 'dirty'), (None, 'unknown'),
+                                 (True, 'dirty'), (True, 'unknown'), (True, None)):
+            with self.subTest(mergeable=mergeable, state=state):
+                api = self.failed(2)
+                policy, receipts = copy.deepcopy(api.policy), copy.deepcopy(api.receipts)
+                read_policy = api.read_policy
+                api.before_fresh = lambda a: setattr(a, 'closing', True)
+
+                def read_then_conflict():
+                    result = read_policy()
+                    if getattr(api, 'closing', False):
+                        api.pr.update(mergeable=mergeable, mergeable_state=state)
+                    return result
+
+                api.read_policy = read_then_conflict
+                reconcile(api, api.config)
+                self.assertEqual(api.policy, policy)
+                self.assertEqual(api.receipts, receipts)
+                self.assertEqual(api.actions, [])
+                self.assertEqual(api.comments, [])
+                self.assertEqual(api.pr['state'], 'open')
+                reconcile(api, api.config)
+                self.assertEqual(api.policy, policy)
+                self.assertEqual(api.receipts, receipts)
+                self.assertEqual(api.actions, [])
+
     def test_known_nonconflicting_red_ci_still_retries_and_closes(self):
         for state in ('clean', 'unstable', 'blocked', 'behind', 'has_hooks'):
             with self.subTest(state=state):
