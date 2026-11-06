@@ -12,9 +12,9 @@ permissions:
 # Tiny gates preserve the existing required check names.
 jobs:
   go-check:
-    uses: fin-assist/go-ci/.github/workflows/shared-go.yml@b99a4af51083e9c129894cd112796b82ade66579 # main
+    uses: fin-assist/go-ci/.github/workflows/shared-go.yml@0fdc30584a4843d1ff58109321894930dbb9f534 # main
     with:
-      revision: 'b99a4af51083e9c129894cd112796b82ade66579'
+      revision: '0fdc30584a4843d1ff58109321894930dbb9f534'
       profile: library
     secrets:
       GO_MODULES_TOKEN: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
@@ -30,9 +30,9 @@ jobs:
       - name: Require successful shared checks
         run: test "$RESULT" = success
   lint-check:
-    uses: fin-assist/go-ci/.github/workflows/shared-lint.yml@b99a4af51083e9c129894cd112796b82ade66579 # main
+    uses: fin-assist/go-ci/.github/workflows/shared-lint.yml@0fdc30584a4843d1ff58109321894930dbb9f534 # main
     with:
-      revision: 'b99a4af51083e9c129894cd112796b82ade66579'
+      revision: '0fdc30584a4843d1ff58109321894930dbb9f534'
     secrets:
       GO_MODULES_TOKEN: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
 
@@ -47,9 +47,9 @@ jobs:
       - name: Require successful shared checks
         run: test "$RESULT" = success
   api-check:
-    uses: fin-assist/go-ci/.github/workflows/shared-api.yml@b99a4af51083e9c129894cd112796b82ade66579 # main
+    uses: fin-assist/go-ci/.github/workflows/shared-api.yml@0fdc30584a4843d1ff58109321894930dbb9f534 # main
     with:
-      revision: 'b99a4af51083e9c129894cd112796b82ade66579'
+      revision: '0fdc30584a4843d1ff58109321894930dbb9f534'
     secrets:
       GO_MODULES_TOKEN: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
 
@@ -65,9 +65,9 @@ jobs:
         run: test "$RESULT" = success
   migrations-check:
     if: github.event_name == 'pull_request'
-    uses: fin-assist/go-ci/.github/workflows/shared-migrations.yml@b99a4af51083e9c129894cd112796b82ade66579 # main
+    uses: fin-assist/go-ci/.github/workflows/shared-migrations.yml@0fdc30584a4843d1ff58109321894930dbb9f534 # main
     with:
-      revision: 'b99a4af51083e9c129894cd112796b82ade66579'
+      revision: '0fdc30584a4843d1ff58109321894930dbb9f534'
 
   migrations:
     needs: migrations-check
