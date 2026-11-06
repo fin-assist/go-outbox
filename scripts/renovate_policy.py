@@ -161,6 +161,13 @@ def trusted(pr, commits, repo):
                     for c in commits))
 
 
+def conflict_free(pr):
+    """Red CI may block merging, but unknown or conflicting PRs stay manual."""
+    return (pr.get('mergeable') is True
+            and pr.get('mergeable_state') in ('clean', 'unstable', 'blocked', 'behind', 'has_hooks'))
+
+
+
 def terminal_checks(jobs, names):
     """Only complete, unambiguous required jobs permit a decision."""
     by_name = {}
@@ -366,7 +373,8 @@ class GitHub:
     def fresh(self, number, sha, base, runs=None):
         pr = self.get(f'pulls/{number}')
         commits = self.signed_commits(number)
-        if not trusted(pr, commits, self.repo) or pr['head']['sha'] != sha or pr['base']['ref'] != base or self.base() != base:
+        if (not trusted(pr, commits, self.repo) or not conflict_free(pr)
+                or pr['head']['sha'] != sha or pr['base']['ref'] != base or self.base() != base):
             return None
         if runs:
             current = self.current_runs(pr, runs)
@@ -457,8 +465,14 @@ class GitHub:
         # Refuse unprotected branches and missing checks. No admin or ruleset bypass.
         rule = self.get('branches/' + urllib.parse.quote(base, safe='') + '/protection')
         checks = rule.get('required_status_checks') or {}
+        bindings = checks.get('checks')
+        bound = (isinstance(bindings, list) and all(isinstance(item, dict) for item in bindings)
+                 and all([item.get('app_id') for item in bindings if item.get('context') == name] == [15368]
+                         for name in names))
         classic = (rule.get('enforce_admins', {}).get('enabled') is True
-                   and checks.get('strict') is True and set(names) <= set(checks.get('contexts', [])))
+                   and checks.get('strict') is True and set(names) <= set(checks.get('contexts', []))
+                   and bound and rule.get('allow_force_pushes', {}).get('enabled') is False
+                   and rule.get('allow_deletions', {}).get('enabled') is False)
         restrictions = rule.get('restrictions') or {}
         owned = (self.controller_login is not None
                  and [user.get('login') for user in restrictions.get('users', [])] == [self.controller_login]
@@ -583,7 +597,7 @@ def reconcile_pr(api, config, base, candidate, trigger):
     number = candidate['number']
     pr = api.get(f'pulls/{number}')
     commits = api.signed_commits(number)
-    if not trusted(pr, commits, api.repo) or pr['base']['ref'] != base:
+    if not trusted(pr, commits, api.repo) or not conflict_free(pr) or pr['base']['ref'] != base:
         return
     sha = pr['head']['sha']
     try:
@@ -661,6 +675,8 @@ def reconcile_pr(api, config, base, candidate, trigger):
                and claims[name].get('attempt') == run['run_attempt']
                and run['status'] == 'completed' and run['conclusion'] == 'failure'
                for name, run in verdicts.items()):
+            if not api.fresh(number, sha, base, runs):
+                return
             print(f'PR {number}: claimed retry has not advanced; owner must inspect Actions; budget retained')
             body = MARKER + json.dumps(state) + ' -->\nАвтоматический retry ещё не подтверждён новым attempt; dispatch неизвестен или не отправлен. Бюджет сохранён. Владелец: проверьте Actions и при необходимости вручную выберите Re-run failed jobs. Автоматический второй retry запрещён.'
             explain_spent_retry(api, config, number, receipt_key, receipt, body)
@@ -714,6 +730,9 @@ def reconcile_pr(api, config, base, candidate, trigger):
             rules.append(rule)
         # Exact failed values override family recreation.
         rules.sort(key=lambda rule: rule.get('description') != 'FIN-211: recovery of an automatically failed dependency family')
+        # Revalidate after policy reads before publishing quarantine/recovery.
+        if not api.fresh(number, sha, base, runs):
+            return
         # Persist version-scoped approval BEFORE closing, including major/groups.
         api.write_policy(policy, policy_sha)
         current = api.fresh(number, sha, base, runs)

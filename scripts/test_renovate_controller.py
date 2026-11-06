@@ -397,9 +397,9 @@ class SignedCommitsAdapterTests(unittest.TestCase):
         valid={'data':{'repository':{'object':{'signature':{'isValid':True,'signer':{'login':'web-flow'}}}}}}
         failures=[{'errors':[{'message':'fixture failure'}],'data':None},
                   {'data':{'repository':{'object':None}}}]
-        # Calls: initial signature, phase-entry fresh, post-claim/policy fresh,
-        # then close's final fresh immediately before PATCH state=closed.
-        for phase,failure_call in [('merge',2),('retry',2),('retry',3),('close',2),('close',3),('close',4)]:
+        # Calls: initial signature, phase-entry fresh, retry's post-claim fresh;
+        # close rechecks before policy write, after it, then before PATCH state=closed.
+        for phase,failure_call in [('merge',2),('retry',2),('retry',3),('close',2),('close',3),('close',4),('close',5)]:
             for failure in failures:
                 with self.subTest(phase=phase,failure_call=failure_call,failure=failure):
                     api=RealSignerFake();calls=[]
@@ -434,7 +434,7 @@ class SignedCommitsAdapterTests(unittest.TestCase):
                             self.assertFalse(any(path.endswith('rerun-failed-jobs') for path,_ in api.actions))
                         else:
                             self.assertEqual(api.receipts,original_receipts)
-                        if phase=='close' and failure_call>=3:
+                        if phase=='close' and failure_call>=4:
                             self.assertTrue(any(rule.get('dependencyDashboardApproval') for rule in api.policy['packageRules']))
                             self.assertTrue(any(path=='policy' for path,_ in api.actions))
                         else:

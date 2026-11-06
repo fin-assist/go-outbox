@@ -86,7 +86,7 @@ class NativeEvidenceTests(unittest.TestCase):
         self.assertEqual(api.native_checks('main',checks,[],jobs)[1]['conclusion'],'failure')
     def test_owner_admin_bypass_must_be_enforced(self):
         class Fake(GitHub):
-            def get(self,path):return {'enforce_admins':{'enabled':False},'required_status_checks':{'strict':True,'contexts':['go']}}
+            def get(self,path):return {'enforce_admins':{'enabled':False},'required_status_checks':{'strict':True,'contexts':['go'],'checks':[{'context':'go','app_id':15368}]},'allow_force_pushes':{'enabled':False},'allow_deletions':{'enabled':False}}
         self.assertFalse(Fake('','x').protection('main',['go']))
 
 class TokenBoundaryTests(unittest.TestCase):
@@ -229,7 +229,7 @@ class ProtectedReceiptAdapterTests(unittest.TestCase):
 class RulesetProtectionTests(unittest.TestCase):
     def test_active_or_unknown_inherited_rulesets_fail_closed(self):
         api=GitHub('token','owner/repo');api.controller_login='controller'
-        api.get=lambda path:{'enforce_admins':{'enabled':True},'required_status_checks':{'strict':True,'contexts':['go']},'restrictions':{'users':[{'login':'controller'}],'teams':[],'apps':[]}}
+        api.get=lambda path:{'enforce_admins':{'enabled':True},'required_status_checks':{'strict':True,'contexts':['go'],'checks':[{'context':'go','app_id':15368}]},'allow_force_pushes':{'enabled':False},'allow_deletions':{'enabled':False},'restrictions':{'users':[{'login':'controller'}],'teams':[],'apps':[]}}
         paths=[]
         def pages(path):paths.append(path);return api.rules
         api.pages=pages
@@ -238,7 +238,7 @@ class RulesetProtectionTests(unittest.TestCase):
         self.assertEqual(set(paths),{'rulesets?includes_parents=true'})
     def test_absent_disabled_or_evaluate_rulesets_preserve_classic_requirements(self):
         api=GitHub('token','owner/repo');api.controller_login='controller'
-        api.get=lambda path:{'enforce_admins':{'enabled':True},'required_status_checks':{'strict':True,'contexts':['go']},'restrictions':{'users':[{'login':'controller'}],'teams':[],'apps':[]}}
+        api.get=lambda path:{'enforce_admins':{'enabled':True},'required_status_checks':{'strict':True,'contexts':['go'],'checks':[{'context':'go','app_id':15368}]},'allow_force_pushes':{'enabled':False},'allow_deletions':{'enabled':False},'restrictions':{'users':[{'login':'controller'}],'teams':[],'apps':[]}}
         for rules in ([],[{'enforcement':'disabled'}],[{'enforcement':'evaluate'}]):
             api.pages=lambda path:rules
             self.assertTrue(api.protection('main',['go']))
@@ -247,7 +247,7 @@ class TargetOwnerProtectionTests(unittest.TestCase):
     def test_only_owner_can_write_target_and_create_release(self):
         import copy
         api=GitHub('token','owner/repo');api.controller_login='controller';api.pages=lambda path:[]
-        rule={'enforce_admins':{'enabled':True},'required_status_checks':{'strict':True,'contexts':['go']},'restrictions':{'users':[{'login':'controller'}],'teams':[],'apps':[]},'block_creations':{'enabled':True}}
+        rule={'enforce_admins':{'enabled':True},'required_status_checks':{'strict':True,'contexts':['go'],'checks':[{'context':'go','app_id':15368}]},'allow_force_pushes':{'enabled':False},'allow_deletions':{'enabled':False},'restrictions':{'users':[{'login':'controller'}],'teams':[],'apps':[]},'block_creations':{'enabled':True}}
         api.get=lambda path:api.rule
         api.rule=copy.deepcopy(rule)
         self.assertTrue(api.protection('main',['go']));self.assertTrue(api.protection('release/1.0.0',['go']))
@@ -308,7 +308,7 @@ class NativeStatusBoundaryTests(unittest.TestCase):
     def test_non_strict_or_missing_required_context_never_passes_protection(self):
         import copy
         api=GitHub('credential','owner/repo');api.controller_login='controller';api.pages=lambda path:[]
-        valid={'enforce_admins':{'enabled':True},'required_status_checks':{'strict':True,'contexts':['go']},'restrictions':{'users':[{'login':'controller'}],'teams':[],'apps':[]}}
+        valid={'enforce_admins':{'enabled':True},'required_status_checks':{'strict':True,'contexts':['go'],'checks':[{'context':'go','app_id':15368}]},'allow_force_pushes':{'enabled':False},'allow_deletions':{'enabled':False},'restrictions':{'users':[{'login':'controller'}],'teams':[],'apps':[]}}
         api.rule=copy.deepcopy(valid);api.get=lambda path:api.rule
         self.assertTrue(api.protection('main',['go']))
         api.rule['required_status_checks']['strict']=False
