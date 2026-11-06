@@ -168,6 +168,42 @@ class ConflictLifecycleTests(unittest.TestCase):
                 self.assertEqual(api.receipts, receipts)
                 self.assertEqual(api.actions, [])
 
+    def test_late_conflict_blocks_spent_claim_notification_and_receipt_repair(self):
+        for has_comment in (False, True):
+            for mergeable, state in ((False, 'dirty'), (None, 'unknown'),
+                                     (True, 'dirty'), (True, 'unknown'), (True, None)):
+                with self.subTest(has_comment=has_comment, mergeable=mergeable, state=state):
+                    api = self.failed(1)
+                    api.receipts = {'1:abc': {'state': {'sha': 'abc', 'runs': {
+                        'ci.yml': {'run_id': 1, 'attempt': 1, 'retried': True}}}, 'comment_id': 10}}
+                    if has_comment:
+                        api.comments = [{'id': 10, 'user': {'login': 'controller'}, 'body': 'retry claim'}]
+                    receipts, comments = copy.deepcopy(api.receipts), copy.deepcopy(api.comments)
+                    policy = copy.deepcopy(api.policy)
+                    current_run = api.current_run
+
+                    def run_then_conflict(*args, **kwargs):
+                        result = current_run(*args, **kwargs)
+                        api.pr.update(mergeable=mergeable, mergeable_state=state)
+                        return result
+
+                    api.current_run = run_then_conflict
+                    error = None
+                    try:
+                        reconcile(api, api.config)
+                    except ValueError as caught:
+                        error = caught
+                    self.assertEqual(api.actions, [])
+                    self.assertEqual(api.receipts, receipts)
+                    self.assertEqual(api.comments, comments)
+                    self.assertEqual(api.policy, policy)
+                    self.assertEqual(api.pr['state'], 'open')
+                    self.assertIsNone(error)
+                    reconcile(api, api.config)
+                    self.assertEqual(api.actions, [])
+                    self.assertEqual(api.receipts, receipts)
+                    self.assertEqual(api.comments, comments)
+
     def test_known_nonconflicting_red_ci_still_retries_and_closes(self):
         for state in ('clean', 'unstable', 'blocked', 'behind', 'has_hooks'):
             with self.subTest(state=state):

@@ -675,6 +675,8 @@ def reconcile_pr(api, config, base, candidate, trigger):
                and claims[name].get('attempt') == run['run_attempt']
                and run['status'] == 'completed' and run['conclusion'] == 'failure'
                for name, run in verdicts.items()):
+            if not api.fresh(number, sha, base, runs):
+                return
             print(f'PR {number}: claimed retry has not advanced; owner must inspect Actions; budget retained')
             body = MARKER + json.dumps(state) + ' -->\nАвтоматический retry ещё не подтверждён новым attempt; dispatch неизвестен или не отправлен. Бюджет сохранён. Владелец: проверьте Actions и при необходимости вручную выберите Re-run failed jobs. Автоматический второй retry запрещён.'
             explain_spent_retry(api, config, number, receipt_key, receipt, body)
