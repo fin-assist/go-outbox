@@ -107,6 +107,40 @@ class ConflictLifecycleTests(unittest.TestCase):
                         self.assertEqual(api.receipts, receipts)
                         self.assertEqual(api.pr['state'], 'open')
 
+    def test_conflict_after_persisted_claim_keeps_budget_without_dispatch_or_redelivery(self):
+        for mergeable, state in ((False, 'dirty'), (None, 'unknown'),
+                                 (True, 'dirty'), (True, 'unknown'), (True, None)):
+            with self.subTest(mergeable=mergeable, state=state):
+                api = self.failed(1)
+                policy = copy.deepcopy(api.policy)
+                write_receipts = api.write_receipts
+
+                def persist_then_conflict(data, sha):
+                    result = write_receipts(data, sha)
+                    api.pr.update(mergeable=mergeable, mergeable_state=state)
+                    return result
+
+                api.write_receipts = persist_then_conflict
+                reconcile(api, api.config)
+                expected = {'sha': 'abc', 'runs': {
+                    'ci.yml': {'run_id': 1, 'attempt': 1, 'retried': True}}}
+                self.assertEqual(api.receipts['1:abc']['state'], expected)
+                self.assertFalse(any(path.endswith('/rerun-failed-jobs') for path, _ in api.actions))
+                self.assertEqual(api.policy, policy)
+                self.assertEqual(api.pr['state'], 'open')
+                actions, receipts = copy.deepcopy(api.actions), copy.deepcopy(api.receipts)
+                reconcile(api, api.config)
+                self.assertEqual(api.actions, actions)
+                self.assertEqual(api.receipts, receipts)
+                # Resolving the conflict does not reset a persisted retry claim.
+                api.pr.update(mergeable=True, mergeable_state='clean')
+                with self.assertRaisesRegex(ValueError, 'Renovate reconciliation failed'):
+                    reconcile(api, api.config)
+                self.assertFalse(any(path.endswith('/rerun-failed-jobs') for path, _ in api.actions))
+                self.assertEqual(api.receipts, receipts)
+                self.assertEqual(api.policy, policy)
+                self.assertEqual(api.pr['state'], 'open')
+
     def test_known_nonconflicting_red_ci_still_retries_and_closes(self):
         for state in ('clean', 'unstable', 'blocked', 'behind', 'has_hooks'):
             with self.subTest(state=state):
